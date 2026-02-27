@@ -1,0 +1,8 @@
+﻿__pycache__/
+*.py[cod]
+.codex
+.serena
+.pytest_cache/
+.env
+data/
+sessions/
