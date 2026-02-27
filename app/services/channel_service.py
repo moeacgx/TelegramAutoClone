@@ -42,33 +42,59 @@ class ChannelService:
         return (now - last_checked) >= self.admin_recheck_interval
 
     async def refresh_standby_channels(self) -> dict[str, Any]:
+        if not await self.telegram.is_user_authorized():
+            return {
+                "scanned_channels": 0,
+                "discovered": 0,
+                "checked_permissions": 0,
+                "skipped_permission_checks": 0,
+                "standby_count": len(await self.db.list_standby_channels()),
+                "warning": "用户账号未登录，无法扫描备用频道",
+            }
+
+        if not await self.telegram.is_bot_authorized():
+            return {
+                "scanned_channels": 0,
+                "discovered": 0,
+                "checked_permissions": 0,
+                "skipped_permission_checks": 0,
+                "standby_count": len(await self.db.list_standby_channels()),
+                "warning": "Bot 未登录，无法校验备用频道权限",
+            }
+
+        await self.telegram.ensure_user_connected()
         await self.telegram.ensure_bot_connected()
 
         discovered = 0
+        scanned_channels = 0
         checked_permissions = 0
         skipped_permission_checks = 0
         now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
-        async for dialog in self.telegram.bot_client.iter_dialogs():
+        # Bot 账号无法调用 iter_dialogs；改为用户账号扫描频道，再由 Bot 账号校验管理权限。
+        async for dialog in self.telegram.user_client.iter_dialogs():
             entity = dialog.entity
             if not dialog.is_channel:
                 continue
             if not getattr(entity, "broadcast", False):
                 continue
 
+            scanned_channels += 1
             chat_id = int(get_peer_id(entity))
             title = entity.title or str(chat_id)
             channel_row = await self.db.get_channel(chat_id)
             need_check = self._needs_admin_recheck(channel_row)
 
-            is_admin = True
+            # 复检窗口内复用上次状态，降低 Telegram API 压力。
+            is_admin = bool(channel_row and (channel_row.get("is_standby") or channel_row.get("in_use")))
             if need_check:
                 checked_permissions += 1
                 try:
-                    permissions = await self.telegram.bot_client.get_permissions(entity, "me")
+                    bot_entity = await self.telegram.bot_client.get_entity(chat_id)
+                    permissions = await self.telegram.bot_client.get_permissions(bot_entity, "me")
                     is_admin = bool(permissions.is_admin)
                 except Exception:
-                    continue
+                    is_admin = False
             else:
                 skipped_permission_checks += 1
 
@@ -102,6 +128,7 @@ class ChannelService:
             discovered += 1
 
         return {
+            "scanned_channels": scanned_channels,
             "discovered": discovered,
             "checked_permissions": checked_permissions,
             "skipped_permission_checks": skipped_permission_checks,

@@ -2,6 +2,7 @@
 import base64
 import io
 import logging
+import sqlite3
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -11,6 +12,7 @@ from typing import Any
 import qrcode
 from telethon import TelegramClient
 from telethon import errors as tg_errors
+from telethon.sessions import SQLiteSession
 
 from app.config import Settings
 
@@ -22,27 +24,35 @@ class PendingQRLogin:
     session_id: str
     created_at: datetime
     qr_login: Any
+    need_password: bool = False
+    status: str = "pending"
+    error: str | None = None
+    relogin_required: bool = False
+    wait_task: asyncio.Task[Any] | None = None
 
 
 class TelegramManager:
     def __init__(self, settings: Settings):
         self.settings = settings
-        session_dir = Path(settings.sessions_dir)
-        session_dir.mkdir(parents=True, exist_ok=True)
+        self._session_dir = Path(settings.sessions_dir)
+        self._session_dir.mkdir(parents=True, exist_ok=True)
+        self._user_session_name = str(self._session_dir / "user")
+        self._bot_session_name = str(self._session_dir / "bot")
 
         self.user_client = TelegramClient(
-            str(session_dir / "user"),
+            self._user_session_name,
             settings.api_id,
             settings.api_hash,
         )
         self.bot_client = TelegramClient(
-            str(session_dir / "bot"),
+            self._bot_session_name,
             settings.api_id,
             settings.api_hash,
         )
 
         self._pending_phone_hash: dict[str, str] = {}
         self._pending_qr: dict[str, PendingQRLogin] = {}
+        self._user_session_lock = asyncio.Lock()
         self._started = False
 
     async def start(self) -> None:
@@ -71,8 +81,16 @@ class TelegramManager:
         self._started = False
 
     async def ensure_user_connected(self) -> None:
-        if not self.user_client.is_connected():
+        if self.user_client.is_connected():
+            return
+
+        try:
             await self.user_client.connect()
+        except Exception as exc:
+            if not self._is_broken_session_storage(exc):
+                raise
+            logger.warning("检测到会话存储损坏，准备自动重建 user.session: %s", exc)
+            await self.reset_user_session()
 
     async def ensure_bot_connected(self) -> None:
         if not self.bot_client.is_connected():
@@ -85,6 +103,68 @@ class TelegramManager:
     async def is_bot_authorized(self) -> bool:
         await self.ensure_bot_connected()
         return await self.bot_client.is_user_authorized()
+
+    @staticmethod
+    def _is_broken_session_storage(exc: Exception) -> bool:
+        if isinstance(exc, sqlite3.OperationalError):
+            text = str(exc).lower()
+            return (
+                "no such table: sessions" in text
+                or "file is not a database" in text
+                or "database disk image is malformed" in text
+            )
+        text = str(exc).lower()
+        return "no such table: sessions" in text
+
+    async def _drop_pending_qr(self, session_id: str) -> None:
+        pending = self._pending_qr.pop(session_id, None)
+        if not pending:
+            return
+        task = pending.wait_task
+        if task and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def _clear_pending_qr(self) -> None:
+        tasks: list[asyncio.Task[Any]] = []
+        for pending in self._pending_qr.values():
+            task = pending.wait_task
+            if task and not task.done():
+                task.cancel()
+                tasks.append(task)
+        self._pending_qr.clear()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _watch_qr_login(self, session_id: str) -> None:
+        pending = self._pending_qr.get(session_id)
+        if not pending:
+            return
+        try:
+            await pending.qr_login.wait()
+            pending.status = "authorized"
+            pending.need_password = False
+            pending.error = None
+        except tg_errors.SessionPasswordNeededError:
+            pending.status = "need_password"
+            pending.need_password = True
+            pending.error = "该账号开启了二级密码，请输入二级密码后登录"
+        except asyncio.TimeoutError:
+            pending.status = "expired"
+            pending.error = "二维码已过期，请重新生成"
+        except tg_errors.AuthKeyUnregisteredError:
+            pending.status = "expired"
+            pending.relogin_required = True
+            pending.error = "当前登录会话已失效，请重新生成二维码"
+        except Exception as exc:
+            if self._is_broken_session_storage(exc):
+                pending.status = "expired"
+                pending.relogin_required = True
+                pending.error = "本地会话存储异常，请重新生成二维码"
+            else:
+                pending.status = "failed"
+                pending.error = str(exc)
+            logger.error("扫码登录监听异常(session=%s): %s", session_id, exc)
 
     async def get_auth_status(self) -> dict[str, Any]:
         user_authorized = await self.is_user_authorized()
@@ -125,22 +205,170 @@ class TelegramManager:
             else:
                 await self.user_client.sign_in(phone=phone, code=code, phone_code_hash=phone_hash)
             return {"ok": True, "need_password": False}
+        except tg_errors.AuthKeyUnregisteredError:
+            return {
+                "ok": False,
+                "need_password": False,
+                "relogin_required": True,
+                "error": "当前会话已失效，请重新发送验证码或重新扫码登录",
+            }
         except tg_errors.SessionPasswordNeededError:
             return {"ok": False, "need_password": True, "error": "账号开启了二步验证，请输入密码"}
         except tg_errors.PhoneCodeInvalidError:
             return {"ok": False, "need_password": False, "error": "验证码错误"}
         except tg_errors.PhoneCodeExpiredError:
             return {"ok": False, "need_password": False, "error": "验证码已过期，请重新发送"}
+        except Exception as exc:
+            if not self._is_broken_session_storage(exc):
+                raise
+            await self.reset_user_session()
+            return {
+                "ok": False,
+                "need_password": False,
+                "relogin_required": True,
+                "error": "本地会话存储异常，已自动重置，请重新扫码或重新发送验证码",
+            }
+
+    async def sign_in_with_password_only(self, password: str, session_id: str | None = None) -> dict[str, Any]:
+        await self.ensure_user_connected()
+        if not password:
+            return {"ok": False, "error": "二级密码不能为空"}
+
+        if not session_id:
+            return {
+                "ok": False,
+                "need_password": True,
+                "error": "请先生成二维码并扫码，再提交二级密码",
+            }
+
+        pending = self._pending_qr.get(session_id)
+        if not pending:
+            return {
+                "ok": False,
+                "relogin_required": True,
+                "error": "二维码会话不存在或已过期，请重新生成二维码",
+            }
+
+        if pending.created_at < datetime.utcnow() - timedelta(minutes=5):
+            await self._drop_pending_qr(session_id)
+            return {
+                "ok": False,
+                "relogin_required": True,
+                "error": "二维码已过期，请重新生成",
+            }
+
+        if pending.status == "pending" and pending.wait_task:
+            # 监听任务在二维码生成时已启动；这里等待结果，避免用户手动检查扫码状态。
+            try:
+                await asyncio.wait_for(asyncio.shield(pending.wait_task), timeout=20)
+            except asyncio.TimeoutError:
+                return {
+                    "ok": False,
+                    "need_password": True,
+                    "error": "20秒内未检测到扫码确认，请先在手机上完成扫码并确认登录后再提交二级密码",
+                }
+
+        if pending.status == "authorized":
+            await self._drop_pending_qr(session_id)
+            return {"ok": True, "need_password": False}
+
+        if pending.status in {"expired", "failed"}:
+            error_message = pending.error or "二维码会话已失效，请重新生成二维码"
+            relogin_required = pending.relogin_required or pending.status == "expired"
+            await self._drop_pending_qr(session_id)
+            return {
+                "ok": False,
+                "need_password": False,
+                "relogin_required": relogin_required,
+                "error": error_message,
+            }
+
+        if pending.status != "need_password":
+            return {
+                "ok": False,
+                "need_password": True,
+                "error": "尚未完成扫码确认，请先在手机完成确认后再提交二级密码",
+            }
+
+        try:
+            await self.user_client.sign_in(password=password)
+            await self._drop_pending_qr(session_id)
+            return {"ok": True, "need_password": False}
+        except tg_errors.AuthKeyUnregisteredError:
+            # 会话密钥已失效（常见于容器重建/会话文件损坏/登录流程超时），自动清理旧会话。
+            await self.reset_user_session()
+            return {
+                "ok": False,
+                "need_password": False,
+                "relogin_required": True,
+                "error": "登录会话已失效，请重新生成二维码并扫码，或重新发送验证码登录",
+            }
+        except tg_errors.PasswordHashInvalidError:
+            return {"ok": False, "need_password": True, "error": "二级密码错误"}
+        except Exception as exc:
+            if not self._is_broken_session_storage(exc):
+                raise
+            await self.reset_user_session()
+            return {
+                "ok": False,
+                "need_password": False,
+                "relogin_required": True,
+                "error": "本地会话存储异常，已自动重置，请重新扫码登录",
+            }
+
+    async def reset_user_session(self) -> None:
+        async with self._user_session_lock:
+            self._pending_phone_hash.clear()
+            await self._clear_pending_qr()
+
+            try:
+                if self.user_client.is_connected():
+                    await self.user_client.disconnect()
+            except Exception as exc:
+                logger.warning("断开用户客户端失败: %s", exc)
+
+            try:
+                self.user_client.session.close()
+            except Exception:
+                pass
+
+            try:
+                self.user_client.session.delete()
+            except Exception as exc:
+                logger.warning("删除 Telethon 会话失败: %s", exc)
+
+            session_base = Path(f"{self._user_session_name}.session")
+            for suffix in ("", "-journal", "-wal", "-shm"):
+                path = Path(f"{session_base}{suffix}")
+                try:
+                    if path.exists():
+                        path.unlink()
+                except Exception as exc:
+                    logger.warning("删除会话文件失败(%s): %s", path, exc)
+
+            # 保留同一个 TelegramClient 实例，重置其 session 存储，避免事件处理器丢失。
+            self.user_client.session = SQLiteSession(self._user_session_name)
+            await self.user_client.connect()
 
     async def create_qr_login(self) -> dict[str, Any]:
-        await self.ensure_user_connected()
-        qr_login = await self.user_client.qr_login()
+        # 每次重新生成二维码都自动重置旧 user 会话，避免手动删除 session 文件。
+        await self.reset_user_session()
+        try:
+            qr_login = await self.user_client.qr_login()
+        except Exception as exc:
+            if not self._is_broken_session_storage(exc):
+                raise
+            await self.reset_user_session()
+            qr_login = await self.user_client.qr_login()
         session_id = str(uuid.uuid4())
-        self._pending_qr[session_id] = PendingQRLogin(
+        pending = PendingQRLogin(
             session_id=session_id,
             created_at=datetime.utcnow(),
             qr_login=qr_login,
+            need_password=False,
         )
+        self._pending_qr[session_id] = pending
+        pending.wait_task = asyncio.create_task(self._watch_qr_login(session_id))
 
         qr_url = qr_login.url
         img = qrcode.make(qr_url)
@@ -161,18 +389,43 @@ class TelegramManager:
             return {"ok": False, "status": "expired", "error": "二维码会话不存在或已过期"}
 
         if pending.created_at < datetime.utcnow() - timedelta(minutes=5):
-            self._pending_qr.pop(session_id, None)
+            await self._drop_pending_qr(session_id)
             return {"ok": False, "status": "expired", "error": "二维码已过期，请重新生成"}
 
-        try:
-            await pending.qr_login.wait(timeout=timeout_seconds)
-            self._pending_qr.pop(session_id, None)
+        if pending.status == "pending" and pending.wait_task:
+            try:
+                await asyncio.wait_for(asyncio.shield(pending.wait_task), timeout=timeout_seconds)
+            except asyncio.TimeoutError:
+                pass
+
+        if pending.status == "authorized":
+            await self._drop_pending_qr(session_id)
             return {"ok": True, "status": "authorized"}
-        except asyncio.TimeoutError:
+
+        if pending.status == "pending":
             return {"ok": True, "status": "pending"}
-        except Exception as exc:
-            logger.error("扫码登录失败: %s", exc)
-            return {"ok": False, "status": "failed", "error": str(exc)}
+
+        if pending.status == "need_password":
+            return {
+                "ok": False,
+                "status": "need_password",
+                "need_password": True,
+                "session_id": session_id,
+                "error": pending.error or "该账号开启了二级密码，请输入二级密码后登录",
+            }
+
+        if pending.status == "expired":
+            error_message = pending.error or "当前登录会话已失效，请重新生成二维码"
+            await self._drop_pending_qr(session_id)
+            return {
+                "ok": False,
+                "status": "expired",
+                "relogin_required": pending.relogin_required,
+                "error": error_message,
+            }
+
+        await self._drop_pending_qr(session_id)
+        return {"ok": False, "status": "failed", "error": pending.error or "扫码登录失败"}
 
     @staticmethod
     def normalize_chat_ref(chat_ref: str | int) -> str | int:
@@ -218,4 +471,4 @@ class TelegramManager:
             sid for sid, data in self._pending_qr.items() if data.created_at < now - timedelta(minutes=5)
         ]
         for sid in expired:
-            self._pending_qr.pop(sid, None)
+            await self._drop_pending_qr(sid)

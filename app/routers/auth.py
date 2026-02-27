@@ -16,6 +16,11 @@ class PhoneLoginRequest(BaseModel):
     password: str | None = None
 
 
+class PasswordOnlyLoginRequest(BaseModel):
+    password: str
+    session_id: str | None = None
+
+
 @router.get("/status")
 async def auth_status(request: Request):
     state = get_state(request)
@@ -36,6 +41,15 @@ async def phone_login(payload: PhoneLoginRequest, request: Request):
     state = get_state(request)
     try:
         return await state.telegram.sign_in_with_code(payload.phone, payload.code, payload.password)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/password/login")
+async def password_login(payload: PasswordOnlyLoginRequest, request: Request):
+    state = get_state(request)
+    try:
+        return await state.telegram.sign_in_with_password_only(payload.password, payload.session_id)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

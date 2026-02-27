@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -69,7 +69,7 @@ async def lifespan(app: FastAPI):
     async def standby_loop():
         while True:
             try:
-                if await telegram.is_bot_authorized():
+                if (await telegram.is_bot_authorized()) and (await telegram.is_user_authorized()):
                     await channel_service.refresh_standby_channels()
             except Exception as exc:
                 logger.exception("standby_loop 异常: %s", exc)

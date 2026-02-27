@@ -234,7 +234,7 @@ function wireActions() {
       currentQrSessionId = result.session_id;
       const qrImage = document.getElementById("qr-image");
       qrImage.src = `data:image/png;base64,${result.qr_image_base64}`;
-      setText("qr-status", `二维码已生成，session_id=${currentQrSessionId}`);
+      setText("qr-status", "二维码已生成，请先扫码；可直接提交二级密码，系统会自动等待最多20秒扫码确认。");
     } catch (error) {
       alert(error.message);
     }
@@ -247,12 +247,51 @@ function wireActions() {
         return;
       }
       const result = await api(`/api/auth/qr/poll/${currentQrSessionId}`);
-      setText("qr-status", `扫码状态: ${result.status}`);
+      if (result.status === "need_password") {
+        setText("qr-status", "扫码状态: 已扫码，需二级密码。请输入二级密码后点击“扫码后提交二级密码”。");
+      } else {
+        setText("qr-status", `扫码状态: ${result.status}`);
+      }
       if (result.status === "authorized") {
         await refreshAuthStatus();
       }
     } catch (error) {
       alert(error.message);
+    }
+  });
+
+  document.getElementById("qr-password-login-btn").addEventListener("click", async () => {
+    const btn = document.getElementById("qr-password-login-btn");
+    try {
+      if (!currentQrSessionId) {
+        alert("请先生成二维码并扫码");
+        return;
+      }
+
+      const password = document.getElementById("password").value.trim();
+      if (!password) {
+        alert("请输入二级密码");
+        return;
+      }
+
+      btn.disabled = true;
+      setText("qr-status", "正在处理：自动等待扫码确认（最多20秒）...");
+      const result = await api("/api/auth/password/login", {
+        method: "POST",
+        body: JSON.stringify({ password, session_id: currentQrSessionId }),
+      });
+
+      if (result.ok) {
+        setText("qr-status", "扫码状态: 已通过二级密码完成登录");
+        currentQrSessionId = null;
+        await refreshAuthStatus();
+        return;
+      }
+      alert(result.error || "二级密码登录失败");
+    } catch (error) {
+      alert(error.message);
+    } finally {
+      btn.disabled = false;
     }
   });
 

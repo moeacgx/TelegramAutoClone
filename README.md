@@ -19,6 +19,17 @@ docker compose up -d
 
 打开：`http://localhost:8000`
 
+## 本地测试（local profile）
+
+当你修改了本地代码，想先验证再推送时：
+
+```bash
+docker compose --profile local up --build app-local
+```
+
+默认访问地址：`http://localhost:8001`  
+可在 `.env` 里通过 `LOCAL_APP_PORT` 调整端口。
+
 ## 在线更新
 
 ### 手动更新（推荐）
