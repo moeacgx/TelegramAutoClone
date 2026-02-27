@@ -1,6 +1,6 @@
 services:
   app:
-    image: ${APP_IMAGE:-ghcr.io/your-org/telegram-auto-clone:latest}
+    image: ${APP_IMAGE:-ghcr.io/moeacgx/telegramautoclone:latest}
     pull_policy: always
     container_name: telegram-auto-clone
     ports:

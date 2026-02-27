@@ -35,3 +35,24 @@ docker compose --profile autoupdate up -d
 说明：
 - `watchtower` 会按 `WATCHTOWER_INTERVAL` 周期检查并更新 `app` 容器镜像。
 - 仅会更新打了 `com.centurylinklabs.watchtower.enable=true` 标签的服务。
+
+## 镜像自动构建（GitHub Actions）
+
+- 仓库已包含工作流：`.github/workflows/docker-image.yml`
+- 触发规则：
+  - push 到 `main`：构建并推送 `latest` + `sha-*`
+  - push 标签 `v*`：构建并推送对应 tag
+  - PR 到 `main`：仅构建校验，不推送
+
+默认镜像地址：
+```text
+ghcr.io/moeacgx/telegramautoclone
+```
+
+使用前请确认：
+1. 仓库启用 GitHub Actions。
+2. 目标部署机可拉取 GHCR 镜像（若包是私有，需要先 `docker login ghcr.io`）。
+3. `.env` 的 `APP_IMAGE` 指向你的 GHCR 镜像，例如：
+```text
+APP_IMAGE=ghcr.io/moeacgx/telegramautoclone:latest
+```
