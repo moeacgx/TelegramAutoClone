@@ -437,7 +437,18 @@ class TelegramManager:
 
         lowered = text.lower()
         if "t.me/" in lowered:
-            text = text.split("t.me/", 1)[1].strip("/")
+            link_path = text.split("t.me/", 1)[1].strip("/")
+            if "?" in link_path:
+                link_path = link_path.split("?", 1)[0]
+
+            # 支持私密消息链接: https://t.me/c/<internal_id>/<topic_id>/<msg_id>
+            # 其中 internal_id 对应超级群/频道的无 -100 前缀 ID。
+            if link_path.startswith("c/"):
+                parts = link_path.split("/")
+                if len(parts) >= 2 and parts[1].isdigit():
+                    return int(f"-100{parts[1]}")
+
+            text = link_path
             if "/" in text:
                 text = text.split("/", 1)[0]
 
