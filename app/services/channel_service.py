@@ -1,8 +1,9 @@
 ﻿import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 from telethon import functions
+from telethon.tl.types import Channel
 from telethon.utils import get_peer_id
 
 from app.db import Database
@@ -15,43 +16,16 @@ class ChannelService:
     def __init__(self, db: Database, telegram: TelegramManager):
         self.db = db
         self.telegram = telegram
-        # 对已验证频道做周期性复检，减少每轮都请求管理员权限。
-        self.admin_recheck_interval = timedelta(minutes=10)
 
-    @staticmethod
-    def _parse_timestamp(value: str | None) -> datetime | None:
-        if not value:
-            return None
+    async def _is_bot_admin(self, chat_id: int) -> bool:
         try:
-            parsed = datetime.fromisoformat(value)
-            if parsed.tzinfo is None:
-                return parsed.replace(tzinfo=timezone.utc)
-            return parsed
-        except ValueError:
-            return None
-
-    def _needs_admin_recheck(self, channel_row: dict[str, Any] | None) -> bool:
-        if not channel_row:
-            return True
-
-        last_checked = self._parse_timestamp(channel_row.get("admin_check_at"))
-        if not last_checked:
-            return True
-
-        now = datetime.now(timezone.utc)
-        return (now - last_checked) >= self.admin_recheck_interval
+            bot_entity = await self.telegram.bot_client.get_entity(chat_id)
+            permissions = await self.telegram.bot_client.get_permissions(bot_entity, "me")
+            return bool(permissions and permissions.is_admin)
+        except Exception:
+            return False
 
     async def refresh_standby_channels(self) -> dict[str, Any]:
-        if not await self.telegram.is_user_authorized():
-            return {
-                "scanned_channels": 0,
-                "discovered": 0,
-                "checked_permissions": 0,
-                "skipped_permission_checks": 0,
-                "standby_count": len(await self.db.list_standby_channels()),
-                "warning": "用户账号未登录，无法扫描备用频道",
-            }
-
         if not await self.telegram.is_bot_authorized():
             return {
                 "scanned_channels": 0,
@@ -62,76 +36,182 @@ class ChannelService:
                 "warning": "Bot 未登录，无法校验备用频道权限",
             }
 
-        await self.telegram.ensure_user_connected()
         await self.telegram.ensure_bot_connected()
 
-        discovered = 0
+        removed = 0
         scanned_channels = 0
         checked_permissions = 0
-        skipped_permission_checks = 0
         now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        standby_channels = await self.db.list_standby_channels()
 
-        # Bot 账号无法调用 iter_dialogs；改为用户账号扫描频道，再由 Bot 账号校验管理权限。
-        async for dialog in self.telegram.user_client.iter_dialogs():
-            entity = dialog.entity
-            if not dialog.is_channel:
-                continue
-            if not getattr(entity, "broadcast", False):
-                continue
-
+        # 仅校验当前备用池，不从历史 channels 缓存扩容。
+        for channel_row in standby_channels:
             scanned_channels += 1
-            chat_id = int(get_peer_id(entity))
-            title = entity.title or str(chat_id)
-            channel_row = await self.db.get_channel(chat_id)
-            need_check = self._needs_admin_recheck(channel_row)
-
-            # 复检窗口内复用上次状态，降低 Telegram API 压力。
-            is_admin = bool(channel_row and (channel_row.get("is_standby") or channel_row.get("in_use")))
-            if need_check:
-                checked_permissions += 1
-                try:
-                    bot_entity = await self.telegram.bot_client.get_entity(chat_id)
-                    permissions = await self.telegram.bot_client.get_permissions(bot_entity, "me")
-                    is_admin = bool(permissions.is_admin)
-                except Exception:
-                    is_admin = False
-            else:
-                skipped_permission_checks += 1
+            chat_id = int(channel_row["chat_id"])
+            title = str(channel_row.get("title") or chat_id)
+            checked_permissions += 1
+            is_admin = await self._is_bot_admin(chat_id)
 
             active_bindings = await self.db.get_binding_by_channel(chat_id)
             if not is_admin:
-                await self.db.upsert_channel(
-                    chat_id=chat_id,
-                    title=title,
-                    is_standby=False,
-                    in_use=bool(active_bindings),
-                    admin_check_at=now_iso if need_check else None,
-                )
+                if active_bindings:
+                    await self.db.upsert_channel(
+                        chat_id=chat_id,
+                        title=title,
+                        is_standby=False,
+                        in_use=True,
+                        admin_check_at=now_iso,
+                    )
+                else:
+                    await self.db.delete_channel(chat_id)
+                    removed += 1
                 continue
 
-            if active_bindings:
-                await self.db.upsert_channel(
-                    chat_id=chat_id,
-                    title=title,
-                    is_standby=False,
-                    in_use=True,
-                    admin_check_at=now_iso if need_check else None,
-                )
-            else:
-                await self.db.upsert_channel(
-                    chat_id=chat_id,
-                    title=title,
-                    is_standby=True,
-                    in_use=False,
-                    admin_check_at=now_iso if need_check else None,
-                )
-            discovered += 1
+            await self.db.upsert_channel(
+                chat_id=chat_id,
+                title=title,
+                is_standby=not bool(active_bindings),
+                in_use=bool(active_bindings),
+                admin_check_at=now_iso,
+            )
 
         return {
             "scanned_channels": scanned_channels,
-            "discovered": discovered,
+            "discovered": len(await self.db.list_standby_channels()),
+            "removed": removed,
             "checked_permissions": checked_permissions,
-            "skipped_permission_checks": skipped_permission_checks,
+            "skipped_permission_checks": 0,
+            "standby_count": len(await self.db.list_standby_channels()),
+        }
+
+    async def add_standby_channels_batch(self, refs_text: str) -> dict[str, Any]:
+        if not await self.telegram.is_bot_authorized():
+            raise RuntimeError("Bot 未登录，无法添加备用频道")
+        await self.telegram.ensure_bot_connected()
+
+        refs = [line.strip() for line in (refs_text or "").splitlines() if line.strip()]
+        if not refs:
+            return {
+                "ok": True,
+                "added": 0,
+                "updated": 0,
+                "failed": [],
+                "standby_count": len(await self.db.list_standby_channels()),
+            }
+
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        added = 0
+        updated = 0
+        failed: list[dict[str, str]] = []
+        visited: set[str] = set()
+
+        for ref in refs:
+            if ref in visited:
+                continue
+            visited.add(ref)
+
+            try:
+                entity = await self.telegram.resolve_chat(ref, prefer_user=False)
+                if not isinstance(entity, Channel) or not getattr(entity, "broadcast", False):
+                    raise ValueError("仅支持频道，且必须是 Bot 可访问的频道")
+
+                chat_id = int(get_peer_id(entity))
+                title = (getattr(entity, "title", None) or str(chat_id)).strip()
+                if not await self._is_bot_admin(chat_id):
+                    raise ValueError("Bot 不是该频道管理员，请先在 Telegram 里设置 Bot 为管理员")
+
+                active_bindings = await self.db.get_binding_by_channel(chat_id)
+                existed = await self.db.get_channel(chat_id)
+                await self.db.upsert_channel(
+                    chat_id=chat_id,
+                    title=title,
+                    is_standby=not bool(active_bindings),
+                    in_use=bool(active_bindings),
+                    admin_check_at=now_iso,
+                )
+                if existed:
+                    updated += 1
+                else:
+                    added += 1
+            except Exception as exc:
+                failed.append({"ref": ref, "error": str(exc)})
+
+        return {
+            "ok": True,
+            "added": added,
+            "updated": updated,
+            "failed": failed,
+            "standby_count": len(await self.db.list_standby_channels()),
+        }
+
+    async def remove_standby_channel(self, chat_id: int) -> dict[str, Any]:
+        channel_row = await self.db.get_channel(chat_id)
+        if not channel_row:
+            return {
+                "ok": False,
+                "removed": False,
+                "error": f"频道不存在: {chat_id}",
+            }
+
+        active_bindings = await self.db.get_binding_by_channel(chat_id)
+        if active_bindings or int(channel_row.get("in_use", 0)) == 1:
+            return {
+                "ok": False,
+                "removed": False,
+                "error": f"频道 {chat_id} 正在绑定使用，不能从备用池删除",
+            }
+
+        if int(channel_row.get("is_standby", 0)) != 1:
+            return {
+                "ok": False,
+                "removed": False,
+                "error": f"频道 {chat_id} 不在备用池",
+            }
+
+        await self.db.delete_channel(chat_id)
+        return {
+            "ok": True,
+            "removed": True,
+            "chat_id": chat_id,
+            "standby_count": len(await self.db.list_standby_channels()),
+        }
+
+    async def remove_standby_channels_batch(self, chat_ids: list[int]) -> dict[str, Any]:
+        removed = 0
+        failed: list[dict[str, Any]] = []
+        seen: set[int] = set()
+
+        for raw_id in chat_ids:
+            chat_id = int(raw_id)
+            if chat_id in seen:
+                continue
+            seen.add(chat_id)
+            result = await self.remove_standby_channel(chat_id)
+            if result.get("ok"):
+                removed += 1
+            else:
+                failed.append(
+                    {
+                        "chat_id": chat_id,
+                        "error": str(result.get("error") or "删除失败"),
+                    }
+                )
+
+        return {
+            "ok": True,
+            "removed": removed,
+            "failed": failed,
+            "standby_count": len(await self.db.list_standby_channels()),
+        }
+
+    async def clear_standby_channels(self) -> dict[str, Any]:
+        channels_before = await self.db.list_channels()
+        count = sum(1 for row in channels_before if int(row.get("in_use", 0)) == 0)
+        if count > 0:
+            await self.db.clear_standby_channels()
+        return {
+            "ok": True,
+            "cleared": count,
             "standby_count": len(await self.db.list_standby_channels()),
         }
 
@@ -148,6 +228,13 @@ class ChannelService:
     async def check_channel_access(self, channel_chat_id: int) -> tuple[bool, str | None]:
         try:
             entity = await self.telegram.bot_client.get_entity(channel_chat_id)
+            # 强制走一次远端接口，避免 get_entity 命中本地缓存导致“频道已失效却被判定可用”。
+            await self.telegram.bot_client(
+                functions.channels.GetFullChannelRequest(channel=entity)
+            )
+            permissions = await self.telegram.bot_client.get_permissions(entity, "me")
+            if permissions and not permissions.is_admin:
+                return False, "Bot 不是该频道管理员"
             title = getattr(entity, "title", str(channel_chat_id))
             await self.db.mark_channel_last_seen(channel_chat_id, title=title)
             return True, None

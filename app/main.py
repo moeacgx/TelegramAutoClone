@@ -13,6 +13,7 @@ from app.services.channel_service import ChannelService
 from app.services.clone_service import CloneService
 from app.services.listener_service import ListenerService
 from app.services.monitor_service import MonitorService
+from app.services.bot_channel_sync_service import BotChannelSyncService
 from app.services.recovery_worker import RecoveryWorker
 from app.services.telegram_manager import TelegramManager
 from app.services.topic_service import TopicService
@@ -36,6 +37,7 @@ async def lifespan(app: FastAPI):
 
     topic_service = TopicService(db, telegram)
     channel_service = ChannelService(db, telegram)
+    bot_channel_sync_service = BotChannelSyncService(db, settings)
     clone_service = CloneService(telegram)
     listener_service = ListenerService(db, telegram, clone_service)
     monitor_service = MonitorService(db, telegram, channel_service, settings.monitor_interval_seconds)
@@ -49,6 +51,7 @@ async def lifespan(app: FastAPI):
     app.state.topic_service = topic_service
     app.state.channel_service = channel_service
     app.state.clone_service = clone_service
+    app.state.bot_channel_sync_service = bot_channel_sync_service
     app.state.listener_service = listener_service
     app.state.monitor_service = monitor_service
     app.state.recovery_worker = recovery_worker
@@ -69,11 +72,25 @@ async def lifespan(app: FastAPI):
     async def standby_loop():
         while True:
             try:
-                if (await telegram.is_bot_authorized()) and (await telegram.is_user_authorized()):
+                if await telegram.is_bot_authorized():
                     await channel_service.refresh_standby_channels()
             except Exception as exc:
                 logger.exception("standby_loop 异常: %s", exc)
             await asyncio.sleep(settings.standby_refresh_seconds)
+
+    async def bot_updates_loop():
+        while True:
+            try:
+                result = await bot_channel_sync_service.sync_once(timeout_seconds=20)
+                if result.get("warning"):
+                    await asyncio.sleep(5)
+                    continue
+                # 收到 bot 频道变更后，立即按实时权限重建备用池，避免旧状态残留。
+                if result.get("tracked_channels", 0) > 0 and await telegram.is_bot_authorized():
+                    await channel_service.refresh_standby_channels()
+            except Exception as exc:
+                logger.exception("bot_updates_loop 异常: %s", exc)
+                await asyncio.sleep(3)
 
     async def recovery_loop():
         while True:
@@ -90,6 +107,7 @@ async def lifespan(app: FastAPI):
 
     tasks = [
         asyncio.create_task(monitor_loop(), name="monitor_loop"),
+        asyncio.create_task(bot_updates_loop(), name="bot_updates_loop"),
         asyncio.create_task(standby_loop(), name="standby_loop"),
         asyncio.create_task(recovery_loop(), name="recovery_loop"),
     ]

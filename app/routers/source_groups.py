@@ -33,8 +33,29 @@ async def add_source_group(payload: AddSourceGroupRequest, request: Request):
 async def sync_topics(source_group_id: int, request: Request):
     state = get_state(request)
     try:
+        before_topics = await state.db.list_topics(source_group_id)
+        before_map = {int(item["topic_id"]): str(item.get("title") or "") for item in before_topics}
         topics = await state.topic_service.sync_topics(source_group_id)
-        return {"ok": True, "topics": topics}
+        changed: list[dict[str, str | int]] = []
+        for item in topics:
+            topic_id = int(item["topic_id"])
+            new_title = str(item.get("title") or "")
+            old_title = before_map.get(topic_id, "")
+            if old_title != new_title:
+                changed.append(
+                    {
+                        "topic_id": topic_id,
+                        "old_title": old_title,
+                        "new_title": new_title,
+                    }
+                )
+        return {
+            "ok": True,
+            "topics": topics,
+            "total": len(topics),
+            "changed": len(changed),
+            "changed_samples": changed[:10],
+        }
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -64,7 +64,8 @@ async function refreshSourceGroups() {
         setText("current-source-id", String(id));
         await refreshTopics();
       } else if (action === "sync") {
-        await api(`/api/source-groups/${id}/sync-topics`, { method: "POST" });
+        const result = await api(`/api/source-groups/${id}/sync-topics`, { method: "POST" });
+        alert(`话题同步完成：总数 ${result.total ?? 0}，变更 ${result.changed ?? 0}`);
         if (currentSourceId === id) {
           await refreshTopics();
         }
@@ -108,9 +109,10 @@ async function refreshTopics() {
         <input type="checkbox" ${topic.enabled ? "checked" : ""} data-topic-id="${topic.topic_id}" data-type="enabled" />
       </td>
       <td>
-        <input placeholder="频道ID" data-topic-id="${topic.topic_id}" data-type="channel" value="${binding ? binding.channel_chat_id : ""}" />
+        <input placeholder="频道ID/@用户名/链接" data-topic-id="${topic.topic_id}" data-type="channel" value="${binding ? binding.channel_chat_id : ""}" />
         <button data-topic-id="${topic.topic_id}" data-type="bind">绑定</button>
-        ${binding ? `<small>[${binding.active ? "生效" : "停用"}]</small>` : ""}
+        <button data-topic-id="${topic.topic_id}" data-type="start-recovery">开始恢复</button>
+        ${binding ? `<small>[${binding.active ? "生效" : "停用"}] ${binding.channel_title || ""}</small>` : ""}
       </td>
     `;
 
@@ -131,9 +133,9 @@ async function refreshTopics() {
     button.addEventListener("click", async () => {
       const topicId = Number(button.dataset.topicId);
       const input = body.querySelector(`input[data-type='channel'][data-topic-id='${topicId}']`);
-      const channelChatId = Number(input.value);
-      if (!channelChatId) {
-        alert("请输入频道ID");
+      const channelRef = (input.value || "").trim();
+      if (!channelRef) {
+        alert("请输入频道ID/@用户名/链接");
         return;
       }
       await api("/api/bindings", {
@@ -141,11 +143,38 @@ async function refreshTopics() {
         body: JSON.stringify({
           source_group_id: currentSourceId,
           topic_id: topicId,
-          channel_chat_id: channelChatId,
+          channel_ref: channelRef,
         }),
       });
       await refreshBindings();
       await refreshTopics();
+    });
+  });
+
+  body.querySelectorAll("button[data-type='start-recovery']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const topicId = Number(button.dataset.topicId);
+      const input = body.querySelector(`input[data-type='channel'][data-topic-id='${topicId}']`);
+      const channelRef = (input.value || "").trim();
+      if (!channelRef) {
+        alert("请先输入并绑定频道ID/@用户名/链接");
+        return;
+      }
+
+      await api("/api/queue/recovery/manual-start", {
+        method: "POST",
+        body: JSON.stringify({
+          source_group_id: currentSourceId,
+          topic_id: topicId,
+          channel_ref: channelRef,
+          run_now: true,
+        }),
+      });
+      await refreshQueue();
+      await refreshBindings();
+      await refreshStandby();
+      await refreshTopics();
+      alert(`已为 topic_id=${topicId} 创建并执行恢复任务`);
     });
   });
 }
@@ -211,7 +240,7 @@ async function refreshBindings() {
   container.innerHTML = "";
   for (const item of list) {
     const li = document.createElement("li");
-    li.textContent = `source_group_id=${item.source_group_id}, topic_id=${item.topic_id}, channel=${item.channel_chat_id}, active=${item.active}`;
+    li.textContent = `任务组=${item.source_title || item.source_group_id}, 话题=${item.topic_title || item.topic_id}, 频道=${item.channel_title || "-"} (${item.channel_chat_id}), active=${item.active}`;
     container.appendChild(li);
   }
 }
@@ -246,6 +275,14 @@ async function runQueueAction(item, action) {
     }
     path = `/api/queue/recovery/${id}/restart`;
     options.body = JSON.stringify({ run_now: true });
+  } else if (action === "stop") {
+    path = `/api/queue/recovery/${id}/stop`;
+  } else if (action === "delete") {
+    if (!confirm(`确认删除任务 #${id} 吗？`)) {
+      return;
+    }
+    path = `/api/queue/recovery/${id}`;
+    options = { method: "DELETE" };
   } else {
     return;
   }
@@ -268,8 +305,10 @@ async function refreshQueue() {
     li.style.marginBottom = "8px";
 
     const status = String(item.status || "");
-    const canContinue = status === "failed" || status === "running" || status === "pending";
+    const canContinue = status === "failed" || status === "running" || status === "pending" || status === "stopped";
     const canRun = status === "pending";
+    const canStop = status === "running" || status === "pending" || status === "stopping";
+    const canDelete = status !== "running" && status !== "stopping";
 
     li.innerHTML = `
       <div>
@@ -316,9 +355,35 @@ async function refreshQueue() {
       }
     });
 
+    const stopBtn = document.createElement("button");
+    stopBtn.textContent = "停止";
+    stopBtn.disabled = !canStop;
+    stopBtn.style.marginLeft = "6px";
+    stopBtn.addEventListener("click", async () => {
+      try {
+        await runQueueAction(item, "stop");
+      } catch (error) {
+        alert(error.message);
+      }
+    });
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.textContent = "删除";
+    deleteBtn.disabled = !canDelete;
+    deleteBtn.style.marginLeft = "6px";
+    deleteBtn.addEventListener("click", async () => {
+      try {
+        await runQueueAction(item, "delete");
+      } catch (error) {
+        alert(error.message);
+      }
+    });
+
     actions.appendChild(runBtn);
     actions.appendChild(continueBtn);
     actions.appendChild(restartBtn);
+    actions.appendChild(stopBtn);
+    actions.appendChild(deleteBtn);
     li.appendChild(actions);
     container.appendChild(li);
   }
@@ -495,8 +560,15 @@ function wireActions() {
         alert("请先选择任务组");
         return;
       }
-      await api(`/api/source-groups/${currentSourceId}/sync-topics`, { method: "POST" });
+      const result = await api(`/api/source-groups/${currentSourceId}/sync-topics`, { method: "POST" });
       await refreshTopics();
+      let message = `话题同步完成：总数 ${result.total ?? 0}，变更 ${result.changed ?? 0}`;
+      const samples = result.changed_samples || [];
+      if (samples.length > 0) {
+        const lines = samples.slice(0, 5).map((x) => `topic_id=${x.topic_id}: ${x.old_title || "(空)"} -> ${x.new_title || "(空)"}`);
+        message += `\n示例变更:\n${lines.join("\n")}`;
+      }
+      alert(message);
     } catch (error) {
       alert(error.message);
     }
@@ -576,6 +648,19 @@ function wireActions() {
     }
   });
 
+  document.getElementById("clear-banned-btn").addEventListener("click", async () => {
+    try {
+      if (!confirm("确认清空封禁频道列表吗？")) {
+        return;
+      }
+      const result = await api("/api/channels/banned/clear", { method: "POST" });
+      await refreshBanned();
+      alert(`已清空封禁列表 ${result.cleared} 条`);
+    } catch (error) {
+      alert(error.message);
+    }
+  });
+
   document.getElementById("run-monitor-btn").addEventListener("click", async () => {
     try {
       const result = await api("/api/queue/monitor/run-once", { method: "POST" });
@@ -611,6 +696,23 @@ function wireActions() {
       const result = await api("/api/queue/recovery/reset-running", { method: "POST" });
       await refreshQueue();
       alert(`已重置 ${result.reset_count} 个运行中任务`);
+    } catch (error) {
+      alert(error.message);
+    }
+  });
+
+  document.getElementById("clear-recovery-queue-btn").addEventListener("click", async () => {
+    try {
+      if (!confirm("确认清空恢复队列中的任务吗？运行中的任务会保留。")) {
+        return;
+      }
+      const result = await api("/api/queue/recovery/clear", {
+        method: "POST",
+        body: JSON.stringify({ include_running: false }),
+      });
+      await refreshQueue();
+      await refreshBanned();
+      alert(`已清空任务 ${result.deleted} 个，保留运行中任务 ${result.skipped_running} 个`);
     } catch (error) {
       alert(error.message);
     }

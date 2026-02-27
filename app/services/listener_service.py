@@ -81,10 +81,13 @@ class ListenerService:
                     old_channel_chat_id=int(binding["channel_chat_id"]),
                     reason=str(exc),
                 )
+                channel_row = await self.db.get_channel(int(binding["channel_chat_id"]))
+                channel_title = str((channel_row or {}).get("title") or binding["channel_chat_id"])
                 await self.telegram.send_notification(
                     f"⚠️ 实时克隆发现频道失效\n"
-                    f"source_group_id={source_group['id']} topic_id={topic_id}\n"
-                    f"旧频道={binding['channel_chat_id']}\n"
+                    f"任务组: {source_group.get('title', source_group['id'])} (id={source_group['id']})\n"
+                    f"话题: {topic.get('title', topic_id)} (topic_id={topic_id})\n"
+                    f"旧频道: {channel_title} ({binding['channel_chat_id']})\n"
                     f"已进入恢复队列 #{queue_id}"
                 )
 

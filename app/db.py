@@ -290,10 +290,15 @@ class Database:
 
     async def list_bindings(self, source_group_id: int | None = None) -> list[dict[str, Any]]:
         sql = """
-        SELECT b.*, t.title AS topic_title, s.title AS source_title
+        SELECT
+            b.*,
+            t.title AS topic_title,
+            s.title AS source_title,
+            c.title AS channel_title
         FROM topic_bindings b
         LEFT JOIN topics t ON t.source_group_id=b.source_group_id AND t.topic_id=b.topic_id
         LEFT JOIN source_groups s ON s.id=b.source_group_id
+        LEFT JOIN channels c ON c.chat_id=b.channel_chat_id
         """
         if source_group_id is None:
             return await self._fetch_all(sql + " ORDER BY b.id DESC")
@@ -302,10 +307,18 @@ class Database:
     async def list_active_bindings(self) -> list[dict[str, Any]]:
         return await self._fetch_all(
             """
-            SELECT b.*, t.title AS topic_title, s.chat_id AS source_chat_id, s.enabled AS source_enabled, t.enabled AS topic_enabled
+            SELECT
+                b.*,
+                t.title AS topic_title,
+                t.enabled AS topic_enabled,
+                s.chat_id AS source_chat_id,
+                s.title AS source_title,
+                s.enabled AS source_enabled,
+                c.title AS channel_title
             FROM topic_bindings b
             JOIN topics t ON t.source_group_id=b.source_group_id AND t.topic_id=b.topic_id
             JOIN source_groups s ON s.id=b.source_group_id
+            LEFT JOIN channels c ON c.chat_id=b.channel_chat_id
             WHERE b.active=1
             """
         )
@@ -465,6 +478,35 @@ class Database:
             """
         )
 
+    async def remove_banned_channel(
+        self,
+        source_group_id: int,
+        topic_id: int,
+        channel_chat_id: int,
+    ) -> int:
+        async with self._write_lock:
+            async with aiosqlite.connect(self.db_path) as conn:
+                cur = await conn.execute(
+                    """
+                    DELETE FROM banned_channels
+                    WHERE source_group_id=? AND topic_id=? AND channel_chat_id=?
+                    """,
+                    (source_group_id, topic_id, channel_chat_id),
+                )
+                await conn.commit()
+                rowcount = cur.rowcount
+                await cur.close()
+                return int(rowcount if rowcount is not None and rowcount >= 0 else 0)
+
+    async def clear_banned_channels(self) -> int:
+        async with self._write_lock:
+            async with aiosqlite.connect(self.db_path) as conn:
+                cur = await conn.execute("DELETE FROM banned_channels")
+                await conn.commit()
+                rowcount = cur.rowcount
+                await cur.close()
+                return int(rowcount if rowcount is not None and rowcount >= 0 else 0)
+
     async def enqueue_recovery(
         self,
         source_group_id: int,
@@ -494,6 +536,37 @@ class Database:
             VALUES (?, ?, ?, ?, 'pending', 0, 0, ?, ?)
             """,
             (source_group_id, topic_id, old_channel_chat_id, reason, now, now),
+        )
+
+    async def enqueue_manual_recovery(
+        self,
+        source_group_id: int,
+        topic_id: int,
+        channel_chat_id: int,
+        reason: str = "手动触发恢复任务",
+    ) -> int:
+        existing = await self._fetch_one(
+            """
+            SELECT id FROM recovery_queue
+            WHERE source_group_id=? AND topic_id=? AND status IN ('pending','running','stopping')
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (source_group_id, topic_id),
+        )
+        if existing:
+            return int(existing["id"])
+
+        now = self._now()
+        return await self._execute(
+            """
+            INSERT INTO recovery_queue(
+                source_group_id, topic_id, old_channel_chat_id, new_channel_chat_id, reason,
+                status, retry_count, last_cloned_message_id, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, 'pending', 0, 0, ?, ?)
+            """,
+            (source_group_id, topic_id, channel_chat_id, channel_chat_id, reason, now, now),
         )
 
     async def list_recovery_queue(self) -> list[dict[str, Any]]:
@@ -540,6 +613,86 @@ class Database:
             (retry_count, last_cloned_message_id, action_text, now, queue_id),
         )
         return await self.get_recovery_by_id(queue_id)
+
+    async def stop_recovery_task(self, queue_id: int) -> dict[str, Any] | None:
+        row = await self.get_recovery_by_id(queue_id)
+        if not row:
+            return None
+
+        status = str(row.get("status") or "")
+        now = self._now()
+        if status == "pending":
+            await self._execute(
+                """
+                UPDATE recovery_queue
+                SET status='stopped', last_error='手动停止(未执行)', updated_at=?
+                WHERE id=?
+                """,
+                (now, queue_id),
+            )
+        elif status == "running":
+            await self._execute(
+                """
+                UPDATE recovery_queue
+                SET status='stopping', last_error='已请求停止，等待当前步骤结束', updated_at=?
+                WHERE id=?
+                """,
+                (now, queue_id),
+            )
+        elif status == "stopping":
+            pass
+        elif status in {"done", "failed", "stopped"}:
+            raise RuntimeError(f"任务 #{queue_id} 当前状态为 {status}，无需停止")
+        else:
+            raise RuntimeError(f"任务 #{queue_id} 状态异常: {status}")
+
+        return await self.get_recovery_by_id(queue_id)
+
+    async def delete_recovery_task(self, queue_id: int) -> bool | None:
+        row = await self.get_recovery_by_id(queue_id)
+        if not row:
+            return None
+
+        status = str(row.get("status") or "")
+        if status in {"running", "stopping"}:
+            raise RuntimeError(f"任务 #{queue_id} 正在执行/停止中，请先等待停止完成")
+
+        await self._execute("DELETE FROM recovery_queue WHERE id=?", (queue_id,))
+        return True
+
+    async def clear_recovery_queue(self, include_running: bool = False) -> dict[str, int]:
+        running_count_row = await self._fetch_one(
+            "SELECT COUNT(1) AS count FROM recovery_queue WHERE status IN ('running','stopping')"
+        )
+        running_count = int((running_count_row or {}).get("count") or 0)
+
+        async with self._write_lock:
+            async with aiosqlite.connect(self.db_path) as conn:
+                if include_running:
+                    cur = await conn.execute("DELETE FROM recovery_queue")
+                else:
+                    cur = await conn.execute(
+                        "DELETE FROM recovery_queue WHERE status NOT IN ('running','stopping')"
+                    )
+                await conn.commit()
+                deleted = int(cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else 0)
+                await cur.close()
+
+        return {
+            "deleted": deleted,
+            "skipped_running": 0 if include_running else running_count,
+        }
+
+    async def is_recovery_stop_requested(self, queue_id: int) -> bool:
+        row = await self._fetch_one(
+            "SELECT status FROM recovery_queue WHERE id=?",
+            (queue_id,),
+        )
+        if not row:
+            return True
+
+        status = str(row.get("status") or "")
+        return status in {"stopping", "stopped"}
 
     async def reset_running_recovery_tasks(self) -> int:
         now = self._now()
@@ -658,6 +811,29 @@ class Database:
             (
                 new_channel_chat_id,
                 summary,
+                last_cloned_message_id,
+                self._now(),
+                queue_id,
+            ),
+        )
+
+    async def mark_recovery_stopped(
+        self,
+        queue_id: int,
+        summary: str = "",
+        last_cloned_message_id: int | None = None,
+    ) -> None:
+        await self._execute(
+            """
+            UPDATE recovery_queue
+            SET status='stopped',
+                last_error=?,
+                last_cloned_message_id=COALESCE(?, last_cloned_message_id),
+                updated_at=?
+            WHERE id=?
+            """,
+            (
+                (summary or "任务已手动停止")[:500],
                 last_cloned_message_id,
                 self._now(),
                 queue_id,

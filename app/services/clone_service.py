@@ -354,6 +354,7 @@ class CloneService:
         target_channel: int,
         start_message_id: int | None = None,
         progress_hook: Callable[[int], Awaitable[None]] | None = None,
+        should_stop: Callable[[], Awaitable[bool]] | None = None,
     ) -> dict[str, Any]:
         total = 0
         cloned = 0
@@ -376,6 +377,9 @@ class CloneService:
             reverse=True,
             min_id=int(start_message_id or 0),
         ):
+            if should_stop and await should_stop():
+                raise RuntimeError("任务已手动停止")
+
             if not self.in_topic(message, topic_id):
                 continue
 
