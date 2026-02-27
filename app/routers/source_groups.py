@@ -60,6 +60,16 @@ async def sync_topics(source_group_id: int, request: Request):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.delete("/{source_group_id}")
+async def delete_source_group(source_group_id: int, request: Request):
+    state = get_state(request)
+    try:
+        result = await state.topic_service.delete_source_group(source_group_id)
+        return {"ok": True, **result}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/{source_group_id}/enabled")
 async def set_source_group_enabled(source_group_id: int, payload: EnableRequest, request: Request):
     state = get_state(request)

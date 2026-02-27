@@ -178,6 +178,12 @@ class TopicService:
     async def list_source_groups(self) -> list[dict[str, Any]]:
         return await self.db.list_source_groups()
 
+    async def delete_source_group(self, source_group_id: int) -> dict[str, int]:
+        source_group = await self.db.get_source_group_by_id(source_group_id)
+        if not source_group:
+            raise ValueError("任务组不存在")
+        return await self.db.delete_source_group(source_group_id)
+
     async def list_topics(self, source_group_id: int | None = None) -> list[dict[str, Any]]:
         return await self.db.list_topics(source_group_id)
 

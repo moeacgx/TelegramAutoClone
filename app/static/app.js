@@ -51,6 +51,7 @@ async function refreshSourceGroups() {
       <button data-action="toggle" data-id="${item.id}" data-enabled="${item.enabled ? 0 : 1}">
         ${item.enabled ? "停用" : "启用"}
       </button>
+      <button data-action="delete" data-id="${item.id}">删除</button>
     `;
     container.appendChild(li);
   }
@@ -76,6 +77,23 @@ async function refreshSourceGroups() {
           body: JSON.stringify({ enabled }),
         });
         await refreshSourceGroups();
+      } else if (action === "delete") {
+        if (!confirm(`确认删除任务组 id=${id} 吗？将同时删除话题、绑定、封禁记录与恢复队列。`)) {
+          return;
+        }
+        const result = await api(`/api/source-groups/${id}`, { method: "DELETE" });
+        if (currentSourceId === id) {
+          currentSourceId = null;
+          setText("current-source-id", "未选择");
+          const topicsBody = document.getElementById("topics-body");
+          if (topicsBody) {
+            topicsBody.innerHTML = "";
+          }
+        }
+        await Promise.all([refreshSourceGroups(), refreshBindings(), refreshBanned(), refreshQueue()]);
+        alert(
+          `任务组 ${id} 已删除：topics=${result.topics || 0}, bindings=${result.topic_bindings || 0}, banned=${result.banned_channels || 0}, queue=${result.recovery_queue || 0}`
+        );
       }
     });
   });

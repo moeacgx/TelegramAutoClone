@@ -209,6 +209,95 @@ class Database:
             (1 if enabled else 0, self._now(), source_group_id),
         )
 
+    async def delete_source_group(self, source_group_id: int) -> dict[str, int]:
+        now = self._now()
+        async with self._write_lock:
+            async with aiosqlite.connect(self.db_path) as conn:
+                await conn.execute("PRAGMA foreign_keys = ON")
+                conn.row_factory = aiosqlite.Row
+
+                cur = await conn.execute(
+                    "SELECT id FROM source_groups WHERE id=?",
+                    (source_group_id,),
+                )
+                exists = await cur.fetchone()
+                await cur.close()
+                if not exists:
+                    return {
+                        "source_groups": 0,
+                        "topics": 0,
+                        "topic_bindings": 0,
+                        "banned_channels": 0,
+                        "recovery_queue": 0,
+                        "released_channels": 0,
+                        "running_jobs": 0,
+                    }
+
+                cur = await conn.execute(
+                    """
+                    SELECT COUNT(1)
+                    FROM recovery_queue
+                    WHERE source_group_id=? AND status IN ('running','stopping')
+                    """,
+                    (source_group_id,),
+                )
+                running_row = await cur.fetchone()
+                await cur.close()
+                running_count = int((running_row[0] if running_row else 0) or 0)
+                if running_count > 0:
+                    raise ValueError(f"该任务组存在 {running_count} 个运行中的恢复任务，请先停止后再删除")
+
+                cur = await conn.execute(
+                    "SELECT DISTINCT channel_chat_id FROM topic_bindings WHERE source_group_id=?",
+                    (source_group_id,),
+                )
+                bound_rows = await cur.fetchall()
+                await cur.close()
+                bound_channel_ids = [int(row[0]) for row in bound_rows]
+
+                counts: dict[str, int] = {}
+                for table in ("recovery_queue", "banned_channels", "topic_bindings", "topics"):
+                    cur = await conn.execute(
+                        f"DELETE FROM {table} WHERE source_group_id=?",
+                        (source_group_id,),
+                    )
+                    counts[table] = int(cur.rowcount if cur.rowcount is not None else 0)
+                    await cur.close()
+
+                cur = await conn.execute(
+                    "DELETE FROM source_groups WHERE id=?",
+                    (source_group_id,),
+                )
+                counts["source_groups"] = int(cur.rowcount if cur.rowcount is not None else 0)
+                await cur.close()
+
+                released_channels = 0
+                for channel_chat_id in bound_channel_ids:
+                    cur = await conn.execute(
+                        "SELECT COUNT(1) FROM topic_bindings WHERE channel_chat_id=? AND active=1",
+                        (channel_chat_id,),
+                    )
+                    row = await cur.fetchone()
+                    await cur.close()
+                    active_count = int((row[0] if row else 0) or 0)
+                    if active_count == 0:
+                        await conn.execute(
+                            "UPDATE channels SET in_use=0, updated_at=? WHERE chat_id=?",
+                            (now, channel_chat_id),
+                        )
+                        released_channels += 1
+
+                await conn.commit()
+                return {
+                    "source_groups": counts.get("source_groups", 0),
+                    "topics": counts.get("topics", 0),
+                    "topic_bindings": counts.get("topic_bindings", 0),
+                    "banned_channels": counts.get("banned_channels", 0),
+                    "recovery_queue": counts.get("recovery_queue", 0),
+                    "released_channels": released_channels,
+                    "running_jobs": running_count,
+                }
+
     async def upsert_topics(self, source_group_id: int, topics: list[dict[str, Any]]) -> None:
         now = self._now()
         rows = [
