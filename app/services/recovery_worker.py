@@ -24,8 +24,11 @@ class RecoveryWorker:
         self.channel_service = channel_service
         self.settings = settings
 
-    async def run_once(self) -> bool:
-        job = await self.db.claim_next_recovery()
+    async def run_once(self, queue_id: int | None = None) -> bool:
+        if queue_id is None:
+            job = await self.db.claim_next_recovery()
+        else:
+            job = await self.db.claim_recovery_by_id(queue_id)
         if not job:
             return False
 

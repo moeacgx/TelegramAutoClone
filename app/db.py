@@ -373,6 +373,19 @@ class Database:
             "SELECT * FROM channels WHERE is_standby=1 AND in_use=0 ORDER BY id ASC"
         )
 
+    async def reset_available_standby_channels(self) -> None:
+        await self._execute(
+            "UPDATE channels SET is_standby=0, updated_at=? WHERE in_use=0",
+            (self._now(),),
+        )
+
+    async def delete_channel(self, chat_id: int) -> None:
+        await self._execute("DELETE FROM channels WHERE chat_id=?", (chat_id,))
+
+    async def clear_standby_channels(self) -> None:
+        # 清空备用池时同步清理所有未占用频道缓存，避免旧缓存在后续校验中回灌。
+        await self._execute("DELETE FROM channels WHERE in_use=0")
+
     async def consume_standby_channel(self, chat_id: int) -> None:
         now = self._now()
         await self._execute(
@@ -400,12 +413,39 @@ class Database:
         channel_chat_id: int,
         reason: str,
     ) -> None:
+        now = self._now()
+        existing = await self._fetch_all(
+            """
+            SELECT id
+            FROM banned_channels
+            WHERE source_group_id=? AND topic_id=? AND channel_chat_id=?
+            ORDER BY id DESC
+            """,
+            (source_group_id, topic_id, channel_chat_id),
+        )
+        if existing:
+            keep_id = int(existing[0]["id"])
+            await self._execute(
+                """
+                UPDATE banned_channels
+                SET reason=?, detected_at=?
+                WHERE id=?
+                """,
+                (reason, now, keep_id),
+            )
+            for row in existing[1:]:
+                await self._execute(
+                    "DELETE FROM banned_channels WHERE id=?",
+                    (int(row["id"]),),
+                )
+            return
+
         await self._execute(
             """
             INSERT INTO banned_channels(source_group_id, topic_id, channel_chat_id, reason, detected_at)
             VALUES (?, ?, ?, ?, ?)
             """,
-            (source_group_id, topic_id, channel_chat_id, reason, self._now()),
+            (source_group_id, topic_id, channel_chat_id, reason, now),
         )
 
     async def list_banned_channels(self) -> list[dict[str, Any]]:
@@ -413,6 +453,11 @@ class Database:
             """
             SELECT b.*, s.title AS source_title, t.title AS topic_title
             FROM banned_channels b
+            JOIN (
+                SELECT source_group_id, topic_id, channel_chat_id, MAX(id) AS latest_id
+                FROM banned_channels
+                GROUP BY source_group_id, topic_id, channel_chat_id
+            ) latest ON latest.latest_id = b.id
             LEFT JOIN source_groups s ON s.id=b.source_group_id
             LEFT JOIN topics t ON t.source_group_id=b.source_group_id AND t.topic_id=b.topic_id
             ORDER BY b.id DESC
@@ -463,6 +508,58 @@ class Database:
             """
         )
 
+    async def get_recovery_by_id(self, queue_id: int) -> dict[str, Any] | None:
+        return await self._fetch_one(
+            "SELECT * FROM recovery_queue WHERE id=?",
+            (queue_id,),
+        )
+
+    async def requeue_recovery_task(self, queue_id: int, restart: bool = False) -> dict[str, Any] | None:
+        row = await self.get_recovery_by_id(queue_id)
+        if not row:
+            return None
+
+        status = str(row.get("status") or "")
+        if status == "done":
+            raise RuntimeError(f"任务 #{queue_id} 已完成，不能继续执行")
+
+        now = self._now()
+        retry_count = 0 if restart else int(row.get("retry_count") or 0)
+        last_cloned_message_id = 0 if restart else int(row.get("last_cloned_message_id") or 0)
+        action_text = "手动重新执行(从头)" if restart else "手动继续执行(断点)"
+        await self._execute(
+            """
+            UPDATE recovery_queue
+            SET status='pending',
+                retry_count=?,
+                last_cloned_message_id=?,
+                last_error=?,
+                updated_at=?
+            WHERE id=?
+            """,
+            (retry_count, last_cloned_message_id, action_text, now, queue_id),
+        )
+        return await self.get_recovery_by_id(queue_id)
+
+    async def reset_running_recovery_tasks(self) -> int:
+        now = self._now()
+        async with self._write_lock:
+            async with aiosqlite.connect(self.db_path) as conn:
+                cur = await conn.execute(
+                    """
+                    UPDATE recovery_queue
+                    SET status='pending',
+                        last_error='手动重置运行中任务为 pending',
+                        updated_at=?
+                    WHERE status='running'
+                    """,
+                    (now,),
+                )
+                await conn.commit()
+                rowcount = cur.rowcount
+                await cur.close()
+                return int(rowcount if rowcount is not None and rowcount >= 0 else 0)
+
     async def claim_next_recovery(self) -> dict[str, Any] | None:
         async with self._write_lock:
             async with aiosqlite.connect(self.db_path) as conn:
@@ -478,6 +575,36 @@ class Database:
                 row = await cur.fetchone()
                 await cur.close()
                 if not row:
+                    return None
+
+                now = self._now()
+                await conn.execute(
+                    "UPDATE recovery_queue SET status='running', updated_at=? WHERE id=?",
+                    (now, row["id"]),
+                )
+                await conn.commit()
+                data = dict(row)
+                data["status"] = "running"
+                data["updated_at"] = now
+                return data
+
+    async def claim_recovery_by_id(self, queue_id: int) -> dict[str, Any] | None:
+        async with self._write_lock:
+            async with aiosqlite.connect(self.db_path) as conn:
+                conn.row_factory = aiosqlite.Row
+                cur = await conn.execute(
+                    "SELECT * FROM recovery_queue WHERE id=?",
+                    (queue_id,),
+                )
+                row = await cur.fetchone()
+                await cur.close()
+                if not row:
+                    return None
+
+                status = str(row["status"])
+                if status == "done":
+                    return None
+                if status == "running":
                     return None
 
                 now = self._now()

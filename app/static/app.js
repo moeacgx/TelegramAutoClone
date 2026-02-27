@@ -1,5 +1,9 @@
 ﻿let currentSourceId = null;
 let currentQrSessionId = null;
+let autoRefreshTimer = null;
+let refreshBusy = false;
+const selectedStandbyIds = new Set();
+const AUTO_REFRESH_KEY = "auto_refresh_enabled";
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -22,6 +26,10 @@ function setText(id, text) {
   if (el) {
     el.textContent = text;
   }
+}
+
+function updateStandbySelectedCount() {
+  setText("standby-selected-count", String(selectedStandbyIds.size));
 }
 
 async function refreshAuthStatus() {
@@ -146,11 +154,55 @@ async function refreshStandby() {
   const list = await api("/api/channels/standby");
   const container = document.getElementById("standby-list");
   container.innerHTML = "";
+  const validIds = new Set(list.map((item) => Number(item.chat_id)));
+
+  for (const chatId of Array.from(selectedStandbyIds)) {
+    if (!validIds.has(chatId)) {
+      selectedStandbyIds.delete(chatId);
+    }
+  }
+
   for (const item of list) {
+    const chatId = Number(item.chat_id);
     const li = document.createElement("li");
-    li.textContent = `${item.title} (${item.chat_id})`;
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = selectedStandbyIds.has(chatId);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) {
+        selectedStandbyIds.add(chatId);
+      } else {
+        selectedStandbyIds.delete(chatId);
+      }
+      updateStandbySelectedCount();
+    });
+
+    const label = document.createElement("span");
+    label.textContent = ` ${item.title} (${chatId}) `;
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.textContent = "删除";
+    deleteBtn.addEventListener("click", async () => {
+      try {
+        if (!confirm(`确认删除备用频道 ${chatId} 吗？`)) {
+          return;
+        }
+        await api(`/api/channels/standby/${chatId}`, { method: "DELETE" });
+        selectedStandbyIds.delete(chatId);
+        await refreshStandby();
+      } catch (error) {
+        alert(error.message);
+      }
+    });
+
+    li.appendChild(checkbox);
+    li.appendChild(label);
+    li.appendChild(deleteBtn);
     container.appendChild(li);
   }
+
+  updateStandbySelectedCount();
 }
 
 async function refreshBindings() {
@@ -175,13 +227,99 @@ async function refreshBanned() {
   }
 }
 
+async function runQueueAction(item, action) {
+  const id = Number(item.id);
+  if (!id) {
+    return;
+  }
+
+  let path = "";
+  let options = { method: "POST" };
+  if (action === "run") {
+    path = `/api/queue/recovery/${id}/run-once`;
+  } else if (action === "continue") {
+    path = `/api/queue/recovery/${id}/continue`;
+    options.body = JSON.stringify({ run_now: true });
+  } else if (action === "restart") {
+    if (!confirm(`确认从头重新执行任务 #${id} 吗？可能会产生重复克隆。`)) {
+      return;
+    }
+    path = `/api/queue/recovery/${id}/restart`;
+    options.body = JSON.stringify({ run_now: true });
+  } else {
+    return;
+  }
+
+  await api(path, options);
+  await refreshQueue();
+  await refreshBindings();
+  await refreshStandby();
+  if (currentSourceId) {
+    await refreshTopics();
+  }
+}
+
 async function refreshQueue() {
   const list = await api("/api/queue/recovery");
   const container = document.getElementById("queue-list");
   container.innerHTML = "";
   for (const item of list) {
     const li = document.createElement("li");
-    li.textContent = `#${item.id} status=${item.status}, source_group_id=${item.source_group_id}, topic_id=${item.topic_id}, old=${item.old_channel_chat_id}, new=${item.new_channel_chat_id || "-"}, retry=${item.retry_count}`;
+    li.style.marginBottom = "8px";
+
+    const status = String(item.status || "");
+    const canContinue = status === "failed" || status === "running" || status === "pending";
+    const canRun = status === "pending";
+
+    li.innerHTML = `
+      <div>
+        <b>#${item.id}</b> status=${status}, source_group_id=${item.source_group_id}, topic_id=${item.topic_id}, old=${item.old_channel_chat_id}, new=${item.new_channel_chat_id || "-"}, retry=${item.retry_count}, checkpoint=${item.last_cloned_message_id || 0}
+      </div>
+      <div>${item.last_error ? `last_error=${item.last_error}` : ""}</div>
+    `;
+
+    const actions = document.createElement("div");
+    actions.style.marginTop = "4px";
+
+    const runBtn = document.createElement("button");
+    runBtn.textContent = "执行该任务";
+    runBtn.disabled = !canRun;
+    runBtn.addEventListener("click", async () => {
+      try {
+        await runQueueAction(item, "run");
+      } catch (error) {
+        alert(error.message);
+      }
+    });
+
+    const continueBtn = document.createElement("button");
+    continueBtn.textContent = "继续(断点)";
+    continueBtn.disabled = !canContinue;
+    continueBtn.style.marginLeft = "6px";
+    continueBtn.addEventListener("click", async () => {
+      try {
+        await runQueueAction(item, "continue");
+      } catch (error) {
+        alert(error.message);
+      }
+    });
+
+    const restartBtn = document.createElement("button");
+    restartBtn.textContent = "重跑(从头)";
+    restartBtn.disabled = status === "done";
+    restartBtn.style.marginLeft = "6px";
+    restartBtn.addEventListener("click", async () => {
+      try {
+        await runQueueAction(item, "restart");
+      } catch (error) {
+        alert(error.message);
+      }
+    });
+
+    actions.appendChild(runBtn);
+    actions.appendChild(continueBtn);
+    actions.appendChild(restartBtn);
+    li.appendChild(actions);
     container.appendChild(li);
   }
 }
@@ -196,6 +334,49 @@ async function refreshAll() {
   if (currentSourceId) {
     await refreshTopics();
   }
+}
+
+async function safeRefreshAll() {
+  if (refreshBusy) {
+    return;
+  }
+  refreshBusy = true;
+  try {
+    await refreshAll();
+  } finally {
+    refreshBusy = false;
+  }
+}
+
+function setAutoPollingEnabled(enabled) {
+  if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer);
+    autoRefreshTimer = null;
+  }
+  localStorage.setItem(AUTO_REFRESH_KEY, enabled ? "1" : "0");
+  if (!enabled) {
+    return;
+  }
+  autoRefreshTimer = setInterval(async () => {
+    try {
+      await safeRefreshAll();
+    } catch (error) {
+      console.error(error);
+    }
+  }, 10000);
+}
+
+function initAutoPollingToggle() {
+  const toggle = document.getElementById("auto-polling-toggle");
+  if (!toggle) {
+    return;
+  }
+  const saved = localStorage.getItem(AUTO_REFRESH_KEY);
+  toggle.checked = saved !== "0";
+  setAutoPollingEnabled(toggle.checked);
+  toggle.addEventListener("change", () => {
+    setAutoPollingEnabled(toggle.checked);
+  });
 }
 
 function wireActions() {
@@ -331,11 +512,78 @@ function wireActions() {
     }
   });
 
+  document.getElementById("delete-selected-standby-btn").addEventListener("click", async () => {
+    try {
+      const chatIds = Array.from(selectedStandbyIds);
+      if (chatIds.length === 0) {
+        alert("请先勾选要删除的备用频道");
+        return;
+      }
+      if (!confirm(`确认删除选中的 ${chatIds.length} 个备用频道吗？`)) {
+        return;
+      }
+      const result = await api("/api/channels/standby/delete", {
+        method: "POST",
+        body: JSON.stringify({ chat_ids: chatIds }),
+      });
+      selectedStandbyIds.clear();
+      await refreshStandby();
+      const failedCount = (result.failed || []).length;
+      alert(`批量删除完成：成功 ${result.removed}，失败 ${failedCount}`);
+    } catch (error) {
+      alert(error.message);
+    }
+  });
+
+  document.getElementById("clear-standby-btn").addEventListener("click", async () => {
+    try {
+      if (!confirm("确认清空整个备用频道池吗？")) {
+        return;
+      }
+      const result = await api("/api/channels/standby/clear", { method: "POST" });
+      selectedStandbyIds.clear();
+      await refreshStandby();
+      alert(`已清空备用池，删除 ${result.cleared} 个频道`);
+    } catch (error) {
+      alert(error.message);
+    }
+  });
+
+  document.getElementById("add-standby-batch-btn").addEventListener("click", async () => {
+    try {
+      const refsText = document.getElementById("standby-batch-input").value.trim();
+      if (!refsText) {
+        alert("请输入要添加的频道，一行一个");
+        return;
+      }
+      const result = await api("/api/channels/standby/batch", {
+        method: "POST",
+        body: JSON.stringify({ refs_text: refsText }),
+      });
+
+      let summary = `批量添加完成：新增 ${result.added}，更新 ${result.updated}，失败 ${result.failed.length}，备用池总数 ${result.standby_count}`;
+      if (result.failed.length > 0) {
+        const topErrors = result.failed.slice(0, 8).map((x) => `${x.ref} => ${x.error}`);
+        summary += `\n失败详情(最多8条)：\n${topErrors.join("\n")}`;
+      } else {
+        document.getElementById("standby-batch-input").value = "";
+      }
+      alert(summary);
+      await refreshStandby();
+      await refreshBindings();
+    } catch (error) {
+      alert(error.message);
+    }
+  });
+
   document.getElementById("run-monitor-btn").addEventListener("click", async () => {
     try {
-      await api("/api/queue/monitor/run-once", { method: "POST" });
+      const result = await api("/api/queue/monitor/run-once", { method: "POST" });
       await refreshBanned();
       await refreshQueue();
+      alert(
+        `巡检完成：扫描 ${result.scanned}，不可访问 ${result.unavailable}，入队 ${result.enqueued}，跳过(任务组停用) ${result.skipped_source_disabled}`
+      );
     } catch (error) {
       alert(error.message);
     }
@@ -354,16 +602,23 @@ function wireActions() {
       alert(error.message);
     }
   });
+
+  document.getElementById("reset-running-queue-btn").addEventListener("click", async () => {
+    try {
+      if (!confirm("确认把所有 running 任务重置为 pending 吗？")) {
+        return;
+      }
+      const result = await api("/api/queue/recovery/reset-running", { method: "POST" });
+      await refreshQueue();
+      alert(`已重置 ${result.reset_count} 个运行中任务`);
+    } catch (error) {
+      alert(error.message);
+    }
+  });
 }
 
 (async function bootstrap() {
   wireActions();
-  await refreshAll();
-  setInterval(async () => {
-    try {
-      await refreshAll();
-    } catch (error) {
-      console.error(error);
-    }
-  }, 10000);
+  initAutoPollingToggle();
+  await safeRefreshAll();
 })();

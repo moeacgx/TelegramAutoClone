@@ -15,6 +15,12 @@
   <main>
     <section class="card">
       <h2>登录状态</h2>
+      <div class="row">
+        <label>
+          <input id="auto-polling-toggle" type="checkbox" checked />
+          自动轮询(10秒)
+        </label>
+      </div>
       <pre id="auth-status">加载中...</pre>
       <div class="row">
         <input id="phone" placeholder="手机号(例如 +8613800000000)" />
@@ -68,6 +74,20 @@
       <h2>备用频道池</h2>
       <div class="row">
         <button id="refresh-standby-btn">刷新备用频道池</button>
+        <button id="delete-selected-standby-btn">删除选中</button>
+        <button id="clear-standby-btn">清空备用池</button>
+      </div>
+      <p class="hint">已选中: <span id="standby-selected-count">0</span></p>
+      <div class="row">
+        <textarea
+          id="standby-batch-input"
+          rows="6"
+          style="width: 100%;"
+          placeholder="批量添加备用频道：一行一个\n支持 -100xxxx / @username / t.me 链接 / 频道消息URL"
+        ></textarea>
+      </div>
+      <div class="row">
+        <button id="add-standby-batch-btn">批量添加备用频道</button>
       </div>
       <ul id="standby-list"></ul>
     </section>
@@ -87,7 +107,9 @@
       <div class="row">
         <button id="run-monitor-btn">手动巡检一次</button>
         <button id="run-recovery-btn">手动执行一个恢复任务</button>
+        <button id="reset-running-queue-btn">重置运行中任务</button>
       </div>
+      <p class="hint">任务支持继续执行(断点) / 重新执行(从头)</p>
       <ul id="queue-list"></ul>
     </section>
   </main>
