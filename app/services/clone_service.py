@@ -359,23 +359,27 @@ class CloneService:
         total = 0
         cloned = 0
         skipped = 0
-        checkpoint_message_id = int(start_message_id or 0)
+        requested_start_message_id = int(start_message_id or 0)
+        # 历史克隆默认从话题根消息 ID 开始，避免扫描整个群历史。
+        effective_start_message_id = max(requested_start_message_id, int(topic_id))
+        checkpoint_message_id = effective_start_message_id
         pending_checkpoint_count = 0
         processed_groups: set[int] = set()
         processed_units = 0
 
         logger.info(
-            "开始克隆话题历史: source=%s topic=%s target=%s start_message_id=%s",
+            "开始克隆话题历史: source=%s topic=%s target=%s request_start=%s effective_start=%s",
             source_chat_id,
             topic_id,
             target_channel,
-            int(start_message_id or 0),
+            requested_start_message_id,
+            effective_start_message_id,
         )
 
         async for message in self.telegram.user_client.iter_messages(
             source_chat_id,
             reverse=True,
-            min_id=int(start_message_id or 0),
+            min_id=effective_start_message_id,
         ):
             if should_stop and await should_stop():
                 raise RuntimeError("任务已手动停止")
@@ -478,5 +482,6 @@ class CloneService:
             "total": total,
             "cloned": cloned,
             "skipped": skipped,
+            "started_min_id": effective_start_message_id,
             "last_cloned_message_id": checkpoint_message_id,
         }

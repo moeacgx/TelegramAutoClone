@@ -101,11 +101,12 @@ class RecoveryWorker:
                 progress_hook=save_checkpoint,
                 should_stop=check_should_stop,
             )
+            resumed_from = int(clone_stats.get("started_min_id") or start_message_id)
 
             summary = (
                 f"恢复完成, cloned={clone_stats['cloned']}, "
                 f"total={clone_stats['total']}, skipped={clone_stats['skipped']}, "
-                f"resumed_from={start_message_id}"
+                f"resumed_from={resumed_from}"
             )
             await self.db.mark_recovery_done(
                 queue_id=queue_id,
