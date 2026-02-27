@@ -12,7 +12,26 @@
 ## 启动
 ```bash
 cp .env.example .env
-docker compose up --build
+# 修改 .env 中 APP_IMAGE 为你的镜像地址
+docker compose pull app
+docker compose up -d
 ```
 
 打开：`http://localhost:8000`
+
+## 在线更新
+
+### 手动更新（推荐）
+```bash
+docker compose pull app
+docker compose up -d app
+```
+
+### 自动更新（watchtower）
+```bash
+docker compose --profile autoupdate up -d
+```
+
+说明：
+- `watchtower` 会按 `WATCHTOWER_INTERVAL` 周期检查并更新 `app` 容器镜像。
+- 仅会更新打了 `com.centurylinklabs.watchtower.enable=true` 标签的服务。
