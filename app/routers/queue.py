@@ -51,9 +51,15 @@ async def start_manual_recovery(payload: ManualRecoveryRequest, request: Request
         raise HTTPException(status_code=400, detail="请提供频道ID/@用户名/频道链接")
 
     try:
-        entity = await state.telegram.resolve_chat(channel_ref, prefer_user=False)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"无法解析频道: {channel_ref}, {exc}") from exc
+        entity = await state.telegram.resolve_chat(channel_ref, prefer_user=True)
+    except Exception as user_exc:
+        try:
+            entity = await state.telegram.resolve_chat(channel_ref, prefer_user=False)
+        except Exception as bot_exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"无法解析频道: {channel_ref}, user={user_exc}, bot={bot_exc}",
+            ) from bot_exc
 
     if not isinstance(entity, Channel) or not bool(getattr(entity, "broadcast", False)):
         raise HTTPException(status_code=400, detail="仅支持频道恢复任务")
@@ -65,7 +71,7 @@ async def start_manual_recovery(payload: ManualRecoveryRequest, request: Request
     if not ok:
         raise HTTPException(
             status_code=400,
-            detail=error_text or "Bot 无法访问该频道，请确认 Bot 已加入且为管理员",
+            detail=error_text or "Bot 或用户账号无法访问该频道，请确认至少一方具备管理员权限",
         )
 
     await state.db.upsert_channel(

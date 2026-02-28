@@ -190,6 +190,9 @@ async function refreshTopics() {
         alert("请先输入并绑定频道ID/@用户名/链接");
         return;
       }
+      if (!confirm(`确认开始恢复任务吗？\ntopic_id=${topicId}\n目标频道=${channelRef}`)) {
+        return;
+      }
 
       try {
         button.disabled = true;
