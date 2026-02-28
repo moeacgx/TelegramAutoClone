@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
@@ -6,126 +6,210 @@
   <title>{{ app_name }}</title>
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
-<body>
-  <header>
-    <h1>Telegram 自动克隆系统（多任务组）</h1>
-    <p>无引用克隆 / 备用频道池 / 封禁恢复队列</p>
-  </header>
+<body class="admin-page">
+  <div class="layout-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand-block">
+        <p class="brand-kicker">Telegram Auto Clone</p>
+        <h1>后台控制台</h1>
+        <p class="brand-sub">多任务组 / 备用池 / 恢复队列</p>
+      </div>
 
-  <main>
-    <section class="card">
-      <h2>登录状态</h2>
-      <div class="row">
-        <label>
-          <input id="auto-polling-toggle" type="checkbox" checked />
-          静默轮询(10秒)
-        </label>
-      </div>
-      <pre id="auth-status">加载中...</pre>
-      <div class="row">
-        <input id="phone" placeholder="手机号(例如 +8613800000000)" />
-        <button id="send-code-btn">发送验证码</button>
-      </div>
-      <div class="row">
-        <input id="code" placeholder="验证码" />
-        <input id="password" placeholder="二步验证密码(可选)" />
-        <button id="login-btn">手机号登录</button>
-      </div>
-      <div class="row">
-        <button id="create-qr-btn">生成扫码登录二维码</button>
-        <button id="poll-qr-btn">检查扫码状态(可选)</button>
-        <button id="qr-password-login-btn">扫码后提交二级密码</button>
-      </div>
-      <div class="qr-wrap">
-        <img id="qr-image" alt="二维码" />
-      </div>
-      <div id="qr-status" class="hint"></div>
-    </section>
+      <nav class="side-nav" id="side-nav">
+        <button data-target="section-overview" class="nav-item active">系统概览</button>
+        <button data-target="section-auth" class="nav-item">登录状态</button>
+        <button data-target="section-source-groups" class="nav-item">任务组</button>
+        <button data-target="section-topics-bindings" class="nav-item">话题与绑定</button>
+        <button data-target="section-standby" class="nav-item">备用池</button>
+        <button data-target="section-recovery" class="nav-item">封禁与恢复</button>
+        <button data-target="section-update" class="nav-item">更新中心</button>
+      </nav>
 
-    <section class="card">
-      <h2>超级群任务组</h2>
-      <div class="row">
-        <input id="source-chat-ref" placeholder="输入超级群ID/@username/t.me链接" />
-        <button id="add-source-btn">添加任务组</button>
+      <div class="sidebar-footer">
+        <button id="panel-logout-btn" class="outline-btn">退出后台</button>
       </div>
-      <ul id="source-group-list"></ul>
-    </section>
+    </aside>
 
-    <section class="card">
-      <h2>系统更新</h2>
-      <div class="row">
-        <button id="check-update-btn">检查更新</button>
-        <button id="confirm-update-btn">确认并更新</button>
-      </div>
-      <pre id="update-status">加载中...</pre>
-    </section>
+    <main class="content-wrap" id="main-content">
+      <header class="topbar">
+        <div>
+          <h2>{{ app_name }}</h2>
+          <p>无引用克隆 / 备用频道池 / 封禁恢复队列</p>
+        </div>
+        <div class="topbar-meta">
+          <span class="pill" id="panel-auth-badge">会话有效</span>
+          <label class="polling-toggle">
+            <input id="auto-polling-toggle" type="checkbox" checked />
+            静默轮询(10秒)
+          </label>
+        </div>
+      </header>
 
-    <section class="card">
-      <h2>话题工作列表</h2>
-      <p>当前任务组ID: <span id="current-source-id">未选择</span></p>
-      <div class="row">
-        <button id="sync-topics-btn">同步当前任务组话题</button>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th>topic_id</th>
-            <th>标题</th>
-            <th>启用</th>
-            <th>绑定频道</th>
-          </tr>
-        </thead>
-        <tbody id="topics-body"></tbody>
-      </table>
-    </section>
+      <section class="section" id="section-overview">
+        <div class="section-title-row">
+          <h3>系统概览</h3>
+        </div>
+        <div class="overview-grid">
+          <article class="overview-card">
+            <p class="overview-label">任务组</p>
+            <p class="overview-value" id="overview-source-count">0</p>
+          </article>
+          <article class="overview-card">
+            <p class="overview-label">当前话题数</p>
+            <p class="overview-value" id="overview-topic-count">0</p>
+          </article>
+          <article class="overview-card">
+            <p class="overview-label">绑定数</p>
+            <p class="overview-value" id="overview-binding-count">0</p>
+          </article>
+          <article class="overview-card">
+            <p class="overview-label">备用频道</p>
+            <p class="overview-value" id="overview-standby-count">0</p>
+          </article>
+          <article class="overview-card">
+            <p class="overview-label">封禁记录</p>
+            <p class="overview-value" id="overview-banned-count">0</p>
+          </article>
+          <article class="overview-card">
+            <p class="overview-label">恢复队列</p>
+            <p class="overview-value" id="overview-queue-count">0</p>
+          </article>
+        </div>
+      </section>
 
-    <section class="card">
-      <h2>备用频道池</h2>
-      <div class="row">
-        <button id="refresh-standby-btn">刷新备用频道池</button>
-        <button id="delete-selected-standby-btn">删除选中</button>
-        <button id="clear-standby-btn">清空备用池</button>
-      </div>
-      <p class="hint">已选中: <span id="standby-selected-count">0</span></p>
-      <div class="row">
-        <textarea
-          id="standby-batch-input"
-          rows="6"
-          style="width: 100%;"
-          placeholder="批量添加备用频道：一行一个\n支持 -100xxxx / @username / t.me 链接 / 频道消息URL"
-        ></textarea>
-      </div>
-      <div class="row">
-        <button id="add-standby-batch-btn">批量添加备用频道</button>
-      </div>
-      <ul id="standby-list"></ul>
-    </section>
+      <section class="section" id="section-auth">
+        <div class="section-title-row">
+          <h3>Telegram 登录状态</h3>
+        </div>
+        <div class="panel-card">
+          <pre id="auth-status">加载中...</pre>
+          <div class="row">
+            <input id="phone" placeholder="手机号(例如 +8613800000000)" />
+            <button id="send-code-btn">发送验证码</button>
+          </div>
+          <div class="row">
+            <input id="code" placeholder="验证码" />
+            <input id="password" placeholder="二步验证密码(可选)" />
+            <button id="login-btn">手机号登录</button>
+          </div>
+          <div class="row">
+            <button id="create-qr-btn">生成扫码登录二维码</button>
+            <button id="poll-qr-btn">检查扫码状态(可选)</button>
+            <button id="qr-password-login-btn">扫码后提交二级密码</button>
+          </div>
+          <div class="qr-wrap">
+            <img id="qr-image" alt="二维码" />
+          </div>
+          <p id="qr-status" class="hint"></p>
+        </div>
+      </section>
 
-    <section class="card">
-      <h2>绑定列表</h2>
-      <ul id="binding-list"></ul>
-    </section>
+      <section class="section" id="section-source-groups">
+        <div class="section-title-row">
+          <h3>超级群任务组</h3>
+        </div>
+        <div class="panel-card">
+          <div class="row">
+            <input id="source-chat-ref" placeholder="输入超级群ID/@username/t.me链接" />
+            <button id="add-source-btn">添加任务组</button>
+          </div>
+          <ul id="source-group-list"></ul>
+        </div>
+      </section>
 
-    <section class="card">
-      <h2>封禁频道列表</h2>
-      <div class="row">
-        <button id="clear-banned-btn">清空封禁列表</button>
-      </div>
-      <ul id="banned-list"></ul>
-    </section>
+      <section class="section" id="section-topics-bindings">
+        <div class="section-title-row">
+          <h3>话题工作列表与绑定</h3>
+          <p>当前任务组ID: <span id="current-source-id">未选择</span></p>
+        </div>
+        <div class="panel-card">
+          <div class="row">
+            <button id="sync-topics-btn">同步当前任务组话题</button>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>topic_id</th>
+                  <th>标题</th>
+                  <th>启用</th>
+                  <th>绑定频道</th>
+                </tr>
+              </thead>
+              <tbody id="topics-body"></tbody>
+            </table>
+          </div>
+        </div>
 
-    <section class="card">
-      <h2>恢复队列</h2>
-      <div class="row">
-        <button id="run-monitor-btn">手动巡检一次</button>
-        <button id="run-recovery-btn">手动执行一个恢复任务</button>
-        <button id="reset-running-queue-btn">重置运行中任务</button>
-        <button id="clear-recovery-queue-btn">清空任务</button>
-      </div>
-      <p class="hint">任务支持继续执行(断点) / 重新执行(从头)</p>
-      <ul id="queue-list"></ul>
-    </section>
-  </main>
+        <div class="panel-card is-hidden">
+          <h4>绑定列表</h4>
+          <ul id="binding-list"></ul>
+        </div>
+      </section>
+
+      <section class="section" id="section-standby">
+        <div class="section-title-row">
+          <h3>备用频道池</h3>
+        </div>
+        <div class="panel-card">
+          <div class="row">
+            <button id="refresh-standby-btn">刷新备用频道池</button>
+            <button id="delete-selected-standby-btn">删除选中</button>
+            <button id="clear-standby-btn">清空备用池</button>
+          </div>
+          <p class="hint">已选中: <span id="standby-selected-count">0</span></p>
+          <div class="row">
+            <textarea
+              id="standby-batch-input"
+              rows="6"
+              placeholder="批量添加备用频道：一行一个\n支持 -100xxxx / @username / t.me 链接 / 频道消息URL"
+            ></textarea>
+          </div>
+          <div class="row">
+            <button id="add-standby-batch-btn">批量添加备用频道</button>
+          </div>
+          <ul id="standby-list"></ul>
+        </div>
+      </section>
+
+      <section class="section" id="section-recovery">
+        <div class="section-title-row">
+          <h3>封禁与恢复</h3>
+        </div>
+        <div class="panel-card">
+          <div class="row">
+            <button id="clear-banned-btn">清空封禁列表</button>
+          </div>
+          <ul id="banned-list"></ul>
+        </div>
+
+        <div class="panel-card">
+          <h4>恢复队列</h4>
+          <div class="row">
+            <button id="run-monitor-btn">手动巡检一次</button>
+            <button id="run-recovery-btn">手动执行一个恢复任务</button>
+            <button id="reset-running-queue-btn">重置运行中任务</button>
+            <button id="clear-recovery-queue-btn">清空任务</button>
+          </div>
+          <p class="hint">任务支持继续执行(断点) / 重新执行(从头)</p>
+          <ul id="queue-list"></ul>
+        </div>
+      </section>
+
+      <section class="section" id="section-update">
+        <div class="section-title-row">
+          <h3>系统更新</h3>
+        </div>
+        <div class="panel-card">
+          <div class="row">
+            <button id="check-update-btn">检查更新</button>
+            <button id="confirm-update-btn">确认并更新</button>
+          </div>
+          <pre id="update-status">加载中...</pre>
+        </div>
+      </section>
+    </main>
+  </div>
 
   <script src="/static/app.js"></script>
 </body>

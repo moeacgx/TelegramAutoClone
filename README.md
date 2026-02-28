@@ -1,4 +1,4 @@
-﻿# Telegram Auto Clone（多任务组）
+# Telegram Auto Clone（多任务组）
 
 ## 功能
 - 多超级群任务组管理（可添加多组源超级群）
@@ -8,16 +8,40 @@
 - Bot 管理员频道自动纳入备用频道库
 - 频道封禁检测、故障队列、自动替换与历史回补
 - 固定群组通知（封禁、恢复完成、失败）
+- 后台页面密码门禁（仅页面访问受保护）
 
 ## 启动
 ```bash
 cp .env.example .env
 # 修改 .env 中 APP_IMAGE 为你的镜像地址
+# 必填：PANEL_PASSWORD
+
 docker compose pull app
 docker compose up -d
 ```
 
 打开：`http://localhost:8000`
+
+## 后台密码验证
+
+### 必填配置
+```text
+PANEL_PASSWORD=change-this-password
+PANEL_SESSION_TTL_SECONDS=86400
+```
+
+说明：
+- `PANEL_PASSWORD` 未配置时，应用会拒绝启动。
+- 登录成功后写入 `HttpOnly Cookie`，默认 24 小时有效。
+- 面板左侧提供“退出后台”按钮，可立即清除会话。
+
+### 安全边界说明（当前实现）
+- 仅保护页面访问：
+  - 未登录访问 `/` 会跳转到 `/login`。
+  - 登录后可访问管理台页面。
+- **API 不做会话校验**（例如 `/api/*` 可直接调用）。
+
+如果你需要更严格防护，建议在反向代理层（Nginx/Caddy）额外加 BasicAuth 或 IP 白名单。
 
 ## 本地测试（local profile）
 

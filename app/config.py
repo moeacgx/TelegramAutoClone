@@ -1,6 +1,6 @@
-﻿from functools import lru_cache
+from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     update_http_timeout_seconds: int = Field(default=8, alias="UPDATE_HTTP_TIMEOUT_SECONDS")
     update_notify_enabled: bool = Field(default=True, alias="UPDATE_NOTIFY_ENABLED")
 
+    panel_password: str = Field(default="", alias="PANEL_PASSWORD")
+    panel_session_ttl_seconds: int = Field(default=86400, alias="PANEL_SESSION_TTL_SECONDS")
+
     app_name: str = "Telegram Auto Clone"
 
     model_config = SettingsConfigDict(
@@ -32,6 +35,14 @@ class Settings(BaseSettings):
         extra="ignore",
         populate_by_name=True,
     )
+
+    @model_validator(mode="after")
+    def validate_panel_auth(self) -> "Settings":
+        if not self.panel_password.strip():
+            raise ValueError("PANEL_PASSWORD 未配置，拒绝启动")
+        if self.panel_session_ttl_seconds <= 0:
+            raise ValueError("PANEL_SESSION_TTL_SECONDS 必须大于 0")
+        return self
 
 
 @lru_cache

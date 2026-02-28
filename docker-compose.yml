@@ -4,7 +4,7 @@ services:
     pull_policy: always
     container_name: telegram-auto-clone
     ports:
-      - "8000:8000"
+      - "8141:8000"
     env_file:
       - .env
     volumes:
@@ -33,6 +33,10 @@ services:
     image: containrrr/watchtower:latest
     container_name: telegram-auto-clone-watchtower
     command: --label-enable --cleanup --http-api-update --http-api-token ${WATCHTOWER_HTTP_TOKEN:-change-this-token}
+    environment:
+      DOCKER_API_VERSION: "1.52"
+    ports:
+      - "127.0.0.1:18080:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped

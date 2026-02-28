@@ -1,4 +1,4 @@
-﻿let currentSourceId = null;
+let currentSourceId = null;
 let currentQrSessionId = null;
 let autoRefreshTimer = null;
 let refreshBusy = false;
@@ -9,6 +9,7 @@ const POLL_INTERVAL_MS = 10000;
 async function api(path, options = {}) {
   const response = await fetch(path, {
     headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
     ...options,
   });
 
@@ -29,6 +30,10 @@ function setText(id, text) {
   }
 }
 
+function updateOverviewCount(id, count) {
+  setText(id, String(count || 0));
+}
+
 function updateStandbySelectedCount() {
   setText("standby-selected-count", String(selectedStandbyIds.size));
 }
@@ -45,10 +50,14 @@ async function refreshUpdateStatus() {
 
 async function refreshSourceGroups() {
   const list = await api("/api/source-groups");
+  updateOverviewCount("overview-source-count", list.length);
+
   const container = document.getElementById("source-group-list");
   container.innerHTML = "";
 
+  const existingIds = new Set();
   for (const item of list) {
+    existingIds.add(Number(item.id));
     const li = document.createElement("li");
     li.innerHTML = `
       <b>${item.title}</b> (${item.chat_id}) [id=${item.id}] [${item.enabled ? "启用" : "停用"}]
@@ -60,6 +69,16 @@ async function refreshSourceGroups() {
       <button data-action="delete" data-id="${item.id}">删除</button>
     `;
     container.appendChild(li);
+  }
+
+  if (currentSourceId && !existingIds.has(Number(currentSourceId))) {
+    currentSourceId = null;
+    setText("current-source-id", "未选择");
+    const topicsBody = document.getElementById("topics-body");
+    if (topicsBody) {
+      topicsBody.innerHTML = "";
+    }
+    updateOverviewCount("overview-topic-count", 0);
   }
 
   container.querySelectorAll("button").forEach((btn) => {
@@ -95,6 +114,7 @@ async function refreshSourceGroups() {
           if (topicsBody) {
             topicsBody.innerHTML = "";
           }
+          updateOverviewCount("overview-topic-count", 0);
         }
         await Promise.all([refreshSourceGroups(), refreshBindings(), refreshBanned(), refreshQueue()]);
         alert(
@@ -109,6 +129,7 @@ async function refreshTopics() {
   const body = document.getElementById("topics-body");
   body.innerHTML = "";
   if (!currentSourceId) {
+    updateOverviewCount("overview-topic-count", 0);
     return;
   }
 
@@ -116,6 +137,7 @@ async function refreshTopics() {
     api(`/api/topics?source_group_id=${currentSourceId}`),
     api(`/api/bindings?source_group_id=${currentSourceId}`),
   ]);
+  updateOverviewCount("overview-topic-count", topics.length);
 
   const bindingMap = new Map();
   for (const b of bindings) {
@@ -222,6 +244,8 @@ async function refreshTopics() {
 
 async function refreshStandby() {
   const list = await api("/api/channels/standby");
+  updateOverviewCount("overview-standby-count", list.length);
+
   const container = document.getElementById("standby-list");
   container.innerHTML = "";
   const validIds = new Set(list.map((item) => Number(item.chat_id)));
@@ -277,6 +301,8 @@ async function refreshStandby() {
 
 async function refreshBindings() {
   const list = await api("/api/bindings");
+  updateOverviewCount("overview-binding-count", list.length);
+
   const container = document.getElementById("binding-list");
   container.innerHTML = "";
   for (const item of list) {
@@ -288,6 +314,8 @@ async function refreshBindings() {
 
 async function refreshBanned() {
   const list = await api("/api/channels/banned");
+  updateOverviewCount("overview-banned-count", list.length);
+
   const container = document.getElementById("banned-list");
   container.innerHTML = "";
   for (const item of list) {
@@ -339,6 +367,8 @@ async function runQueueAction(item, action) {
 
 async function refreshQueue() {
   const list = await api("/api/queue/recovery");
+  updateOverviewCount("overview-queue-count", list.length);
+
   const container = document.getElementById("queue-list");
   container.innerHTML = "";
   for (const item of list) {
@@ -509,7 +539,61 @@ function initAutoPollingToggle() {
   });
 }
 
+function initSectionNav() {
+  const nav = document.getElementById("side-nav");
+  if (!nav) {
+    return;
+  }
+
+  const buttons = Array.from(nav.querySelectorAll(".nav-item"));
+  const sections = buttons
+    .map((button) => document.getElementById(String(button.dataset.target || "")))
+    .filter((x) => x);
+
+  for (const button of buttons) {
+    button.addEventListener("click", () => {
+      const targetId = button.dataset.target;
+      const target = document.getElementById(String(targetId || ""));
+      if (!target) {
+        return;
+      }
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+
+  const observer = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) {
+          continue;
+        }
+        const id = entry.target.id;
+        for (const button of buttons) {
+          button.classList.toggle("active", button.dataset.target === id);
+        }
+      }
+    },
+    {
+      rootMargin: "-30% 0px -50% 0px",
+      threshold: 0,
+    }
+  );
+
+  for (const section of sections) {
+    observer.observe(section);
+  }
+}
+
 function wireActions() {
+  document.getElementById("panel-logout-btn").addEventListener("click", async () => {
+    try {
+      await api("/api/panel-auth/logout", { method: "POST" });
+      window.location.href = "/login";
+    } catch (error) {
+      alert(error.message);
+    }
+  });
+
   document.getElementById("send-code-btn").addEventListener("click", async () => {
     try {
       const phone = document.getElementById("phone").value.trim();
@@ -820,5 +904,6 @@ function wireActions() {
 (async function bootstrap() {
   wireActions();
   initAutoPollingToggle();
+  initSectionNav();
   await safeRefreshAll();
 })();

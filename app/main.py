@@ -8,7 +8,8 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import get_settings
 from app.db import Database
-from app.routers import auth, bindings, channels, dashboard, queue, source_groups, topics, update
+from app.routers import auth, bindings, channels, dashboard, panel_auth, queue, source_groups, topics, update
+from app.services.panel_auth_service import PanelAuthService
 from app.services.channel_service import ChannelService
 from app.services.clone_service import CloneService
 from app.services.listener_service import ListenerService
@@ -44,6 +45,7 @@ async def lifespan(app: FastAPI):
     monitor_service = MonitorService(db, telegram, channel_service, settings.monitor_interval_seconds)
     recovery_worker = RecoveryWorker(db, telegram, clone_service, channel_service, settings)
     update_service = UpdateService(db, settings, telegram)
+    panel_auth_service = PanelAuthService(settings)
 
     templates = Jinja2Templates(directory="app/templates")
 
@@ -58,6 +60,7 @@ async def lifespan(app: FastAPI):
     app.state.monitor_service = monitor_service
     app.state.recovery_worker = recovery_worker
     app.state.update_service = update_service
+    app.state.panel_auth = panel_auth_service
     app.state.templates = templates
 
     await listener_service.start()
@@ -139,6 +142,7 @@ app = FastAPI(title="Telegram Auto Clone", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 app.include_router(dashboard.router)
+app.include_router(panel_auth.router)
 app.include_router(auth.router)
 app.include_router(source_groups.router)
 app.include_router(topics.router)

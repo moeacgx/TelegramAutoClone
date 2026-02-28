@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ app_name }} - 后台登录</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body class="login-page">
+  <main class="login-wrap">
+    <section class="login-card">
+      <p class="brand-kicker">Telegram Auto Clone</p>
+      <h1>后台访问验证</h1>
+      <p class="login-desc">请输入后台密码后进入管理台。</p>
+
+      <form id="panel-login-form" class="login-form" autocomplete="off">
+        <label for="panel-password">后台密码</label>
+        <input id="panel-password" type="password" placeholder="请输入后台密码" required />
+        <button id="panel-login-btn" type="submit">进入后台</button>
+      </form>
+
+      <p id="login-status" class="hint"></p>
+    </section>
+  </main>
+  <script src="/static/login.js"></script>
+</body>
+</html>
