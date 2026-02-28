@@ -346,14 +346,27 @@ async function refreshQueue() {
     li.style.marginBottom = "8px";
 
     const status = String(item.status || "");
-    const canContinue = status === "failed" || status === "running" || status === "pending" || status === "stopped";
-    const canRun = status === "pending";
-    const canStop = status === "running" || status === "pending" || status === "stopping";
+    const statusMap = {
+      waiting_standby: "waiting_standby(等待备用频道)",
+    };
+    const statusLabel = statusMap[status] || status;
+    const canContinue =
+      status === "failed" ||
+      status === "running" ||
+      status === "pending" ||
+      status === "stopped" ||
+      status === "waiting_standby";
+    const canRun = status === "pending" || status === "waiting_standby";
+    const canStop =
+      status === "running" ||
+      status === "pending" ||
+      status === "stopping" ||
+      status === "waiting_standby";
     const canDelete = status !== "running" && status !== "stopping";
 
     li.innerHTML = `
       <div>
-        <b>#${item.id}</b> status=${status}, source_group_id=${item.source_group_id}, topic_id=${item.topic_id}, old=${item.old_channel_chat_id}, new=${item.new_channel_chat_id || "-"}, retry=${item.retry_count}, checkpoint=${item.last_cloned_message_id || 0}
+        <b>#${item.id}</b> status=${statusLabel}, source_group_id=${item.source_group_id}, topic_id=${item.topic_id}, old=${item.old_channel_chat_id}, new=${item.new_channel_chat_id || "-"}, retry=${item.retry_count}, checkpoint=${item.last_cloned_message_id || 0}
       </div>
       <div>${item.last_error ? `last_error=${item.last_error}` : ""}</div>
     `;

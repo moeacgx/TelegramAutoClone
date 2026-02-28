@@ -606,7 +606,7 @@ class Database:
         existing = await self._fetch_one(
             """
             SELECT id FROM recovery_queue
-            WHERE source_group_id=? AND topic_id=? AND status IN ('pending','running')
+            WHERE source_group_id=? AND topic_id=? AND status IN ('pending','running','waiting_standby')
             ORDER BY id DESC
             LIMIT 1
             """,
@@ -653,7 +653,7 @@ class Database:
         existing = await self._fetch_one(
             """
             SELECT id FROM recovery_queue
-            WHERE source_group_id=? AND topic_id=? AND status IN ('pending','running','stopping')
+            WHERE source_group_id=? AND topic_id=? AND status IN ('pending','running','stopping','waiting_standby')
             ORDER BY id DESC
             LIMIT 1
             """,
@@ -726,7 +726,7 @@ class Database:
 
         status = str(row.get("status") or "")
         now = self._now()
-        if status == "pending":
+        if status in {"pending", "waiting_standby"}:
             await self._execute(
                 """
                 UPDATE recovery_queue
@@ -831,7 +831,7 @@ class Database:
                 cur = await conn.execute(
                     """
                     SELECT * FROM recovery_queue
-                    WHERE status='pending'
+                    WHERE status IN ('pending','waiting_standby')
                     ORDER BY id ASC
                     LIMIT 1
                     """
@@ -977,6 +977,22 @@ class Database:
                 """,
                 (retry_count + 1, error_text[:500], now, queue_id),
             )
+
+    async def mark_recovery_waiting_standby(
+        self,
+        queue_id: int,
+        summary: str = "等待备用频道补充后自动继续",
+    ) -> None:
+        await self._execute(
+            """
+            UPDATE recovery_queue
+            SET status='waiting_standby',
+                last_error=?,
+                updated_at=?
+            WHERE id=?
+            """,
+            (summary[:500], self._now(), queue_id),
+        )
 
     async def get_next_available_standby_channel(self) -> dict[str, Any] | None:
         return await self._fetch_one(
