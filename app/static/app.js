@@ -4,6 +4,7 @@ let autoRefreshTimer = null;
 let refreshBusy = false;
 const selectedStandbyIds = new Set();
 const AUTO_REFRESH_KEY = "auto_refresh_enabled";
+const POLL_INTERVAL_MS = 10000;
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -454,6 +455,16 @@ async function safeRefreshAll() {
   }
 }
 
+async function silentPollBackend() {
+  const paths = [
+    "/api/auth/status",
+    "/api/update/status",
+    "/api/queue/recovery",
+    "/api/channels/banned",
+  ];
+  await Promise.allSettled(paths.map((path) => api(path)));
+}
+
 function setAutoPollingEnabled(enabled) {
   if (autoRefreshTimer) {
     clearInterval(autoRefreshTimer);
@@ -465,11 +476,11 @@ function setAutoPollingEnabled(enabled) {
   }
   autoRefreshTimer = setInterval(async () => {
     try {
-      await safeRefreshAll();
+      await silentPollBackend();
     } catch (error) {
       console.error(error);
     }
-  }, 10000);
+  }, POLL_INTERVAL_MS);
 }
 
 function initAutoPollingToggle() {
