@@ -1,4 +1,4 @@
-﻿from app.routers import auth, bindings, channels, dashboard, queue, source_groups, topics
+﻿from app.routers import auth, bindings, channels, dashboard, queue, source_groups, topics, update
 
 __all__ = [
     "auth",
@@ -8,4 +8,5 @@ __all__ = [
     "queue",
     "source_groups",
     "topics",
+    "update",
 ]

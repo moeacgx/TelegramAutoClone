@@ -6,6 +6,7 @@ from app.services.monitor_service import MonitorService
 from app.services.recovery_worker import RecoveryWorker
 from app.services.telegram_manager import TelegramManager
 from app.services.topic_service import TopicService
+from app.services.update_service import UpdateService
 
 __all__ = [
     "BotChannelSyncService",
@@ -16,4 +17,5 @@ __all__ = [
     "RecoveryWorker",
     "TelegramManager",
     "TopicService",
+    "UpdateService",
 ]

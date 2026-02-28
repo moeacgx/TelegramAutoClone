@@ -68,12 +68,21 @@ class MonitorService:
                 channel_chat_id=int(binding["channel_chat_id"]),
                 reason=error_text or "频道不可访问",
             )
-            queue_id = await self.db.enqueue_recovery(
+            queue_id, created = await self.db.enqueue_recovery_with_status(
                 source_group_id=int(binding["source_group_id"]),
                 topic_id=int(binding["topic_id"]),
                 old_channel_chat_id=int(binding["channel_chat_id"]),
                 reason=error_text or "频道不可访问",
             )
+            if not created:
+                logger.info(
+                    "失效频道已在恢复队列中，跳过重复通知: source_group_id=%s topic_id=%s channel=%s queue_id=%s",
+                    binding["source_group_id"],
+                    binding["topic_id"],
+                    binding["channel_chat_id"],
+                    queue_id,
+                )
+                continue
             source_title = str(binding.get("source_title") or f"source_group_id={binding['source_group_id']}")
             topic_title = str(binding.get("topic_title") or f"topic_id={binding['topic_id']}")
             channel_title = str(binding.get("channel_title") or f"频道{binding['channel_chat_id']}")

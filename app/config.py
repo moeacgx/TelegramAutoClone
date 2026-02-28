@@ -17,6 +17,13 @@ class Settings(BaseSettings):
     standby_refresh_seconds: int = Field(default=120, alias="STANDBY_REFRESH_SECONDS")
     recovery_max_retry: int = Field(default=3, alias="RECOVERY_MAX_RETRY")
 
+    app_image: str = Field(default="ghcr.io/moeacgx/telegramautoclone:latest", alias="APP_IMAGE")
+    watchtower_url: str = Field(default="http://watchtower:8080", alias="WATCHTOWER_URL")
+    watchtower_http_token: str = Field(default="", alias="WATCHTOWER_HTTP_TOKEN")
+    update_check_interval_seconds: int = Field(default=600, alias="UPDATE_CHECK_INTERVAL_SECONDS")
+    update_http_timeout_seconds: int = Field(default=8, alias="UPDATE_HTTP_TIMEOUT_SECONDS")
+    update_notify_enabled: bool = Field(default=True, alias="UPDATE_NOTIFY_ENABLED")
+
     app_name: str = "Telegram Auto Clone"
 
     model_config = SettingsConfigDict(

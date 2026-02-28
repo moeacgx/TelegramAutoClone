@@ -32,7 +32,7 @@ services:
   watchtower:
     image: containrrr/watchtower:latest
     container_name: telegram-auto-clone-watchtower
-    command: --label-enable --cleanup --interval ${WATCHTOWER_INTERVAL:-300}
+    command: --label-enable --cleanup --http-api-update --http-api-token ${WATCHTOWER_HTTP_TOKEN:-change-this-token}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped

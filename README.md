@@ -44,8 +44,27 @@ docker compose --profile autoupdate up -d
 ```
 
 说明：
-- `watchtower` 会按 `WATCHTOWER_INTERVAL` 周期检查并更新 `app` 容器镜像。
+- 当前默认模式为“手动确认更新”，watchtower 不会周期自动更新。
 - 仅会更新打了 `com.centurylinklabs.watchtower.enable=true` 标签的服务。
+- 已启用 `watchtower` HTTP API，可在管理台触发“确认并更新”。
+
+### 面板检测更新 / 手动确认更新
+
+管理台新增“系统更新”卡片，支持：
+- 检查更新（对比 `APP_IMAGE` 当前 tag 的远端 digest）
+- 检测到新版本时可发送 Telegram 通知（`UPDATE_NOTIFY_ENABLED=true`）
+- 点击“确认并更新”后触发 watchtower 拉取并重启
+
+需要在 `.env` 配置：
+```text
+WATCHTOWER_HTTP_TOKEN=change-this-token
+WATCHTOWER_URL=http://watchtower:8080
+UPDATE_CHECK_INTERVAL_SECONDS=600
+UPDATE_NOTIFY_ENABLED=true
+```
+
+可选：若你需要恢复“自动轮询更新”，可自行在 `docker-compose.yml` 的 watchtower `command` 增加：
+`--http-api-periodic-polls --interval 300`
 
 ## 镜像自动构建（GitHub Actions）
 

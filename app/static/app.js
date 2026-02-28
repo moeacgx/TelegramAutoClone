@@ -37,6 +37,11 @@ async function refreshAuthStatus() {
   setText("auth-status", JSON.stringify(status, null, 2));
 }
 
+async function refreshUpdateStatus() {
+  const status = await api("/api/update/status");
+  setText("update-status", JSON.stringify(status, null, 2));
+}
+
 async function refreshSourceGroups() {
   const list = await api("/api/source-groups");
   const container = document.getElementById("source-group-list");
@@ -409,6 +414,7 @@ async function refreshQueue() {
 
 async function refreshAll() {
   await refreshAuthStatus();
+  await refreshUpdateStatus();
   await refreshSourceGroups();
   await refreshStandby();
   await refreshBindings();
@@ -567,6 +573,39 @@ function wireActions() {
         body: JSON.stringify({ chat_ref: chatRef }),
       });
       await refreshSourceGroups();
+    } catch (error) {
+      alert(error.message);
+    }
+  });
+
+  document.getElementById("check-update-btn").addEventListener("click", async () => {
+    try {
+      const result = await api("/api/update/check", { method: "POST" });
+      await refreshUpdateStatus();
+      if (result.ok && result.has_update) {
+        alert(`检测到新版本：${result.latest_digest}\n请点击“确认并更新”执行升级。`);
+      } else if (result.ok) {
+        alert("当前已是最新版本。");
+      } else {
+        alert(result.error || "更新检测失败");
+      }
+    } catch (error) {
+      alert(error.message);
+    }
+  });
+
+  document.getElementById("confirm-update-btn").addEventListener("click", async () => {
+    try {
+      if (!confirm("确认执行更新吗？系统将触发 watchtower 拉取并重启容器。")) {
+        return;
+      }
+      const result = await api("/api/update/confirm", { method: "POST" });
+      await refreshUpdateStatus();
+      if (result.triggered) {
+        alert("已触发更新，请等待容器重启后刷新页面。");
+      } else {
+        alert("已确认最新版本。当前未启用 watchtower HTTP 触发，请手动执行部署更新命令。");
+      }
     } catch (error) {
       alert(error.message);
     }

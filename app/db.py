@@ -596,13 +596,13 @@ class Database:
                 await cur.close()
                 return int(rowcount if rowcount is not None and rowcount >= 0 else 0)
 
-    async def enqueue_recovery(
+    async def enqueue_recovery_with_status(
         self,
         source_group_id: int,
         topic_id: int,
         old_channel_chat_id: int,
         reason: str,
-    ) -> int:
+    ) -> tuple[int, bool]:
         existing = await self._fetch_one(
             """
             SELECT id FROM recovery_queue
@@ -613,10 +613,10 @@ class Database:
             (source_group_id, topic_id),
         )
         if existing:
-            return int(existing["id"])
+            return int(existing["id"]), False
 
         now = self._now()
-        return await self._execute(
+        queue_id = await self._execute(
             """
             INSERT INTO recovery_queue(
                 source_group_id, topic_id, old_channel_chat_id, reason,
@@ -626,6 +626,22 @@ class Database:
             """,
             (source_group_id, topic_id, old_channel_chat_id, reason, now, now),
         )
+        return queue_id, True
+
+    async def enqueue_recovery(
+        self,
+        source_group_id: int,
+        topic_id: int,
+        old_channel_chat_id: int,
+        reason: str,
+    ) -> int:
+        queue_id, _ = await self.enqueue_recovery_with_status(
+            source_group_id=source_group_id,
+            topic_id=topic_id,
+            old_channel_chat_id=old_channel_chat_id,
+            reason=reason,
+        )
+        return queue_id
 
     async def enqueue_manual_recovery(
         self,
@@ -771,6 +787,12 @@ class Database:
             "deleted": deleted,
             "skipped_running": 0 if include_running else running_count,
         }
+
+    async def count_running_recovery_jobs(self) -> int:
+        row = await self._fetch_one(
+            "SELECT COUNT(1) AS count FROM recovery_queue WHERE status IN ('running','stopping')"
+        )
+        return int((row or {}).get("count") or 0)
 
     async def is_recovery_stop_requested(self, queue_id: int) -> bool:
         row = await self._fetch_one(

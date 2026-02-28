@@ -75,12 +75,21 @@ class ListenerService:
                     channel_chat_id=int(binding["channel_chat_id"]),
                     reason=str(exc),
                 )
-                queue_id = await self.db.enqueue_recovery(
+                queue_id, created = await self.db.enqueue_recovery_with_status(
                     source_group_id=int(source_group["id"]),
                     topic_id=int(topic_id),
                     old_channel_chat_id=int(binding["channel_chat_id"]),
                     reason=str(exc),
                 )
+                if not created:
+                    logger.info(
+                        "监听到失效频道但恢复任务已存在，跳过重复通知: source_group_id=%s topic_id=%s channel=%s queue_id=%s",
+                        source_group["id"],
+                        topic_id,
+                        binding["channel_chat_id"],
+                        queue_id,
+                    )
+                    return
                 channel_row = await self.db.get_channel(int(binding["channel_chat_id"]))
                 channel_title = str((channel_row or {}).get("title") or binding["channel_chat_id"])
                 await self.telegram.send_notification(

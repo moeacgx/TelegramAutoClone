@@ -8,7 +8,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import get_settings
 from app.db import Database
-from app.routers import auth, bindings, channels, dashboard, queue, source_groups, topics
+from app.routers import auth, bindings, channels, dashboard, queue, source_groups, topics, update
 from app.services.channel_service import ChannelService
 from app.services.clone_service import CloneService
 from app.services.listener_service import ListenerService
@@ -17,6 +17,7 @@ from app.services.bot_channel_sync_service import BotChannelSyncService
 from app.services.recovery_worker import RecoveryWorker
 from app.services.telegram_manager import TelegramManager
 from app.services.topic_service import TopicService
+from app.services.update_service import UpdateService
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,6 +43,7 @@ async def lifespan(app: FastAPI):
     listener_service = ListenerService(db, telegram, clone_service)
     monitor_service = MonitorService(db, telegram, channel_service, settings.monitor_interval_seconds)
     recovery_worker = RecoveryWorker(db, telegram, clone_service, channel_service, settings)
+    update_service = UpdateService(db, settings, telegram)
 
     templates = Jinja2Templates(directory="app/templates")
 
@@ -55,6 +57,7 @@ async def lifespan(app: FastAPI):
     app.state.listener_service = listener_service
     app.state.monitor_service = monitor_service
     app.state.recovery_worker = recovery_worker
+    app.state.update_service = update_service
     app.state.templates = templates
 
     await listener_service.start()
@@ -105,11 +108,20 @@ async def lifespan(app: FastAPI):
                 logger.exception("recovery_loop 异常: %s", exc)
                 await asyncio.sleep(2)
 
+    async def update_check_loop():
+        while True:
+            try:
+                await update_service.check_and_notify()
+            except Exception as exc:
+                logger.exception("update_check_loop 异常: %s", exc)
+            await asyncio.sleep(max(30, int(settings.update_check_interval_seconds)))
+
     tasks = [
         asyncio.create_task(monitor_loop(), name="monitor_loop"),
         asyncio.create_task(bot_updates_loop(), name="bot_updates_loop"),
         asyncio.create_task(standby_loop(), name="standby_loop"),
         asyncio.create_task(recovery_loop(), name="recovery_loop"),
+        asyncio.create_task(update_check_loop(), name="update_check_loop"),
     ]
 
     try:
@@ -133,3 +145,4 @@ app.include_router(topics.router)
 app.include_router(bindings.router)
 app.include_router(channels.router)
 app.include_router(queue.router)
+app.include_router(update.router)
