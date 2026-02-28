@@ -24,6 +24,7 @@ async def index(request: Request):
         {
             "request": request,
             "app_name": state.settings.app_name,
+            "asset_version": request.app.state.asset_version,
         },
     )
 
@@ -39,5 +40,6 @@ async def login_page(request: Request):
         {
             "request": request,
             "app_name": state.settings.app_name,
+            "asset_version": request.app.state.asset_version,
         },
     )

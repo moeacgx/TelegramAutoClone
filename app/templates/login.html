@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{{ app_name }} - 后台登录</title>
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/styles.css?v={{ asset_version }}" />
 </head>
 <body class="login-page">
   <main class="login-wrap">
@@ -22,6 +22,6 @@
       <p id="login-status" class="hint"></p>
     </section>
   </main>
-  <script src="/static/login.js"></script>
+  <script src="/static/login.js?v={{ asset_version }}"></script>
 </body>
 </html>

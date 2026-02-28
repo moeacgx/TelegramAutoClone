@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -62,6 +63,7 @@ async def lifespan(app: FastAPI):
     app.state.update_service = update_service
     app.state.panel_auth = panel_auth_service
     app.state.templates = templates
+    app.state.asset_version = str(int(time.time()))
 
     await listener_service.start()
 
