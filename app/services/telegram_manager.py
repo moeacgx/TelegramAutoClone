@@ -54,12 +54,35 @@ class TelegramManager:
         self._pending_qr: dict[str, PendingQRLogin] = {}
         self._user_session_lock = asyncio.Lock()
         self._started = False
+        self._user_connect_error: str | None = None
 
     async def start(self) -> None:
         if self._started:
             return
 
-        await self.user_client.connect()
+        try:
+            await self.user_client.connect()
+            self._user_connect_error = None
+        except tg_errors.AuthKeyDuplicatedError as exc:
+            logger.warning("检测到 user 会话冲突，尝试自动重置会话: %s", exc)
+            try:
+                await self.reset_user_session()
+                self._user_connect_error = None
+            except Exception as reset_exc:
+                self._user_connect_error = str(reset_exc)
+                logger.error("自动重置 user 会话失败，后台将降级启动: %s", reset_exc)
+        except Exception as exc:
+            if self._is_broken_session_storage(exc):
+                logger.warning("检测到会话存储损坏，准备自动重建 user.session: %s", exc)
+                try:
+                    await self.reset_user_session()
+                    self._user_connect_error = None
+                except Exception as reset_exc:
+                    self._user_connect_error = str(reset_exc)
+                    logger.error("自动重置 user 会话失败，后台将降级启动: %s", reset_exc)
+            else:
+                self._user_connect_error = str(exc)
+                logger.error("用户客户端连接失败，后台将降级启动: %s", exc)
 
         if self.settings.bot_token:
             try:
@@ -86,8 +109,13 @@ class TelegramManager:
 
         try:
             await self.user_client.connect()
+            self._user_connect_error = None
+        except tg_errors.AuthKeyDuplicatedError as exc:
+            logger.warning("检测到 user 会话冲突，准备自动重建 user.session: %s", exc)
+            await self.reset_user_session()
         except Exception as exc:
             if not self._is_broken_session_storage(exc):
+                self._user_connect_error = str(exc)
                 raise
             logger.warning("检测到会话存储损坏，准备自动重建 user.session: %s", exc)
             await self.reset_user_session()
@@ -167,13 +195,36 @@ class TelegramManager:
             logger.error("扫码登录监听异常(session=%s): %s", session_id, exc)
 
     async def get_auth_status(self) -> dict[str, Any]:
-        user_authorized = await self.is_user_authorized()
-        bot_authorized = await self.is_bot_authorized()
-        user_me = await self.user_client.get_me() if user_authorized else None
-        bot_me = await self.bot_client.get_me() if bot_authorized else None
+        user_authorized = False
+        bot_authorized = False
+        user_me = None
+        bot_me = None
+        user_error = self._user_connect_error
+        bot_error: str | None = None
+
+        try:
+            user_authorized = await self.is_user_authorized()
+            if user_authorized:
+                user_me = await self.user_client.get_me()
+        except Exception as exc:
+            user_authorized = False
+            user_error = str(exc)
+            logger.warning("获取 user 授权状态失败: %s", exc)
+
+        try:
+            bot_authorized = await self.is_bot_authorized()
+            if bot_authorized:
+                bot_me = await self.bot_client.get_me()
+        except Exception as exc:
+            bot_authorized = False
+            bot_error = str(exc)
+            logger.warning("获取 bot 授权状态失败: %s", exc)
+
         return {
             "user_authorized": user_authorized,
             "bot_authorized": bot_authorized,
+            "user_error": user_error,
+            "bot_error": bot_error,
             "user": {
                 "id": user_me.id,
                 "username": user_me.username,
@@ -349,6 +400,7 @@ class TelegramManager:
             # 保留同一个 TelegramClient 实例，重置其 session 存储，避免事件处理器丢失。
             self.user_client.session = SQLiteSession(self._user_session_name)
             await self.user_client.connect()
+            self._user_connect_error = None
 
     async def create_qr_login(self) -> dict[str, Any]:
         # 每次重新生成二维码都自动重置旧 user 会话，避免手动删除 session 文件。
