@@ -1,7 +1,9 @@
-﻿import logging
+import asyncio
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from telethon import errors as tg_errors
 from telethon import functions
 from telethon.tl.types import Channel
 from telethon.utils import get_peer_id
@@ -226,20 +228,34 @@ class ChannelService:
         await self.db.mark_channel_last_seen(channel_chat_id, title=(new_title or "未命名话题")[:128])
 
     async def check_channel_access(self, channel_chat_id: int) -> tuple[bool, str | None]:
-        try:
-            entity = await self.telegram.bot_client.get_entity(channel_chat_id)
-            # 强制走一次远端接口，避免 get_entity 命中本地缓存导致“频道已失效却被判定可用”。
-            await self.telegram.bot_client(
-                functions.channels.GetFullChannelRequest(channel=entity)
-            )
-            permissions = await self.telegram.bot_client.get_permissions(entity, "me")
-            if permissions and not permissions.is_admin:
-                return False, "Bot 不是该频道管理员"
-            title = getattr(entity, "title", str(channel_chat_id))
-            await self.db.mark_channel_last_seen(channel_chat_id, title=title)
-            return True, None
-        except Exception as exc:
-            return False, str(exc)
+        for attempt in range(2):
+            try:
+                entity = await self.telegram.bot_client.get_entity(channel_chat_id)
+                # 强制走一次远端接口，避免 get_entity 命中本地缓存导致“频道已失效却被判定可用”。
+                await self.telegram.bot_client(
+                    functions.channels.GetFullChannelRequest(channel=entity)
+                )
+                permissions = await self.telegram.bot_client.get_permissions(entity, "me")
+                if permissions and not permissions.is_admin:
+                    return False, "Bot 不是该频道管理员"
+                title = getattr(entity, "title", str(channel_chat_id))
+                await self.db.mark_channel_last_seen(channel_chat_id, title=title)
+                return True, None
+            except tg_errors.FloodWaitError as exc:
+                wait_seconds = int(getattr(exc, "seconds", 0) or 0)
+                if attempt == 0 and 0 < wait_seconds <= 15:
+                    logger.warning(
+                        "频道访问检查触发 FloodWait，等待 %ss 后重试: channel=%s",
+                        wait_seconds,
+                        channel_chat_id,
+                    )
+                    await asyncio.sleep(wait_seconds + 1)
+                    continue
+                return False, f"请求过于频繁，请 {max(wait_seconds, 1)} 秒后重试"
+            except Exception as exc:
+                return False, str(exc)
+
+        return False, "频道访问检查失败"
 
     async def list_channels(self) -> list[dict[str, Any]]:
         return await self.db.list_channels()

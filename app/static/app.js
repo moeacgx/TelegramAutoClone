@@ -156,21 +156,28 @@ async function refreshTopics() {
     button.addEventListener("click", async () => {
       const topicId = Number(button.dataset.topicId);
       const input = body.querySelector(`input[data-type='channel'][data-topic-id='${topicId}']`);
-      const channelRef = (input.value || "").trim();
+      const channelRef = ((input && input.value) || "").trim();
       if (!channelRef) {
         alert("请输入频道ID/@用户名/链接");
         return;
       }
-      await api("/api/bindings", {
-        method: "POST",
-        body: JSON.stringify({
-          source_group_id: currentSourceId,
-          topic_id: topicId,
-          channel_ref: channelRef,
-        }),
-      });
-      await refreshBindings();
-      await refreshTopics();
+      try {
+        button.disabled = true;
+        await api("/api/bindings", {
+          method: "POST",
+          body: JSON.stringify({
+            source_group_id: currentSourceId,
+            topic_id: topicId,
+            channel_ref: channelRef,
+          }),
+        });
+        await refreshBindings();
+        await refreshTopics();
+      } catch (error) {
+        alert(`绑定失败: ${error.message}`);
+      } finally {
+        button.disabled = false;
+      }
     });
   });
 
@@ -184,20 +191,27 @@ async function refreshTopics() {
         return;
       }
 
-      await api("/api/queue/recovery/manual-start", {
-        method: "POST",
-        body: JSON.stringify({
-          source_group_id: currentSourceId,
-          topic_id: topicId,
-          channel_ref: channelRef,
-          run_now: true,
-        }),
-      });
-      await refreshQueue();
-      await refreshBindings();
-      await refreshStandby();
-      await refreshTopics();
-      alert(`已为 topic_id=${topicId} 创建并执行恢复任务`);
+      try {
+        button.disabled = true;
+        await api("/api/queue/recovery/manual-start", {
+          method: "POST",
+          body: JSON.stringify({
+            source_group_id: currentSourceId,
+            topic_id: topicId,
+            channel_ref: channelRef,
+            run_now: true,
+          }),
+        });
+        await refreshQueue();
+        await refreshBindings();
+        await refreshStandby();
+        await refreshTopics();
+        alert(`已为 topic_id=${topicId} 创建并执行恢复任务`);
+      } catch (error) {
+        alert(`创建恢复任务失败: ${error.message}`);
+      } finally {
+        button.disabled = false;
+      }
     });
   });
 }
