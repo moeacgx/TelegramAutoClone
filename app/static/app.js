@@ -297,13 +297,7 @@ async function refreshTopics() {
           throw new Error(data.detail || JSON.stringify(data));
         }
 
-        if (data.apply_warning) {
-          alert(`头像已保存，但同步到已绑定频道失败：${data.apply_warning}`);
-        } else if (data.applied_channel_chat_id) {
-          alert(`头像已保存，并已同步到绑定频道 ${data.applied_channel_chat_id}`);
-        } else {
-          alert("头像已保存");
-        }
+        alert("头像已保存（仅配置，不会立即改频道；绑定/恢复时自动应用）");
         await refreshTopics();
       } catch (error) {
         alert(`上传头像失败: ${error.message}`);

@@ -60,26 +60,11 @@ async def upload_topic_avatar(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    binding = await state.db.get_binding(source_group_id, topic_id)
-    applied_channel: int | None = None
-    apply_warning: str | None = None
-    if binding and int(binding.get("active", 0)) == 1:
-        applied_channel = int(binding["channel_chat_id"])
-        try:
-            await state.channel_service.apply_topic_profile(
-                channel_chat_id=applied_channel,
-                topic_title=str(updated_topic.get("title") or topic_id),
-                topic_avatar_path=str(updated_topic.get("avatar_path") or ""),
-            )
-        except Exception as exc:
-            apply_warning = str(exc)
-
     return {
         "ok": True,
         "topic": updated_topic,
         "avatar_url": f"/api/topics/{source_group_id}/{topic_id}/avatar",
-        "applied_channel_chat_id": applied_channel,
-        "apply_warning": apply_warning,
+        "applied_now": False,
     }
 
 
