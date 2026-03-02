@@ -7,17 +7,39 @@ const AUTO_REFRESH_KEY = "auto_refresh_enabled";
 const POLL_INTERVAL_MS = 10000;
 
 async function api(path, options = {}) {
+  const isFormData = options && options.body instanceof FormData;
+  const headers = isFormData ? {} : { "Content-Type": "application/json" };
   const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
+    headers,
     credentials: "same-origin",
     ...options,
   });
 
   const text = await response.text();
-  const data = text ? JSON.parse(text) : {};
+  const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+  let data = {};
+  if (text) {
+    if (contentType.includes("application/json")) {
+      try {
+        data = JSON.parse(text);
+      } catch (error) {
+        throw new Error(`接口返回 JSON 解析失败（status=${response.status}）`);
+      }
+    } else {
+      const snippet = text.slice(0, 120).trim();
+      if (snippet.startsWith("<!DOCTYPE") || snippet.startsWith("<html")) {
+        if (response.redirected && String(response.url || "").includes("/login")) {
+          window.location.href = "/login";
+          throw new Error("后台会话已过期，请重新登录");
+        }
+        throw new Error(`接口返回了 HTML 页面（status=${response.status}），可能请求超时或会话失效`);
+      }
+      data = { detail: snippet };
+    }
+  }
 
   if (!response.ok) {
-    const detail = data.detail || JSON.stringify(data);
+    const detail = data.detail || (text ? text.slice(0, 300) : `HTTP ${response.status}`);
     throw new Error(detail);
   }
   return data;
@@ -265,14 +287,14 @@ async function refreshTopics() {
             source_group_id: currentSourceId,
             topic_id: topicId,
             channel_ref: channelRef,
-            run_now: true,
+            run_now: false,
           }),
         });
         await refreshQueue();
         await refreshBindings();
         await refreshStandby();
         await refreshTopics();
-        alert(`已为 topic_id=${topicId} 创建并执行恢复任务`);
+        alert(`已为 topic_id=${topicId} 创建恢复任务，后台将自动执行`);
       } catch (error) {
         alert(`创建恢复任务失败: ${error.message}`);
       } finally {
