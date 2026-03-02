@@ -179,6 +179,7 @@ async function refreshTopics() {
       <td>
         <input placeholder="频道ID/@用户名/链接" data-topic-id="${topic.topic_id}" data-type="channel" value="${binding ? binding.channel_chat_id : ""}" />
         <button data-topic-id="${topic.topic_id}" data-type="bind">绑定</button>
+        <button data-topic-id="${topic.topic_id}" data-type="unbind" ${binding ? "" : "disabled"}>解除绑定</button>
         <button data-topic-id="${topic.topic_id}" data-type="start-recovery">开始恢复</button>
         ${binding ? `<small>[${binding.active ? "生效" : "停用"}] ${binding.channel_title || ""}</small>` : ""}
       </td>
@@ -274,6 +275,39 @@ async function refreshTopics() {
         alert(`已为 topic_id=${topicId} 创建并执行恢复任务`);
       } catch (error) {
         alert(`创建恢复任务失败: ${error.message}`);
+      } finally {
+        button.disabled = false;
+      }
+    });
+  });
+
+  body.querySelectorAll("button[data-type='unbind']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const topicId = Number(button.dataset.topicId);
+      if (!confirm(`确认解除绑定吗？\ntopic_id=${topicId}`)) {
+        return;
+      }
+
+      try {
+        button.disabled = true;
+        const result = await api(`/api/bindings/${currentSourceId}/${topicId}`, {
+          method: "DELETE",
+        });
+        await refreshQueue();
+        await refreshBanned();
+        await refreshBindings();
+        await refreshTopics();
+
+        const removed = result.removed || {};
+        const cleanup = result.cleanup || {};
+        alert(
+          `解除绑定成功：频道 ${removed.channel_chat_id || "-"}，` +
+            `清理封禁 ${Number(cleanup.banned_deleted || 0)}，` +
+            `删除队列 ${Number(cleanup.queue_deleted || 0)}，` +
+            `停止运行中任务 ${Number(cleanup.running_marked_stopping || 0)}`
+        );
+      } catch (error) {
+        alert(`解除绑定失败: ${error.message}`);
       } finally {
         button.disabled = false;
       }

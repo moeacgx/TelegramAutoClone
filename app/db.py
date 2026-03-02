@@ -470,6 +470,50 @@ class Database:
             (1 if active else 0, self._now(), source_group_id, topic_id),
         )
 
+    async def unbind_topic(self, source_group_id: int, topic_id: int) -> dict[str, Any] | None:
+        now = self._now()
+        async with self._write_lock:
+            async with aiosqlite.connect(self.db_path) as conn:
+                conn.row_factory = aiosqlite.Row
+                cur = await conn.execute(
+                    """
+                    SELECT * FROM topic_bindings
+                    WHERE source_group_id=? AND topic_id=?
+                    LIMIT 1
+                    """,
+                    (source_group_id, topic_id),
+                )
+                row = await cur.fetchone()
+                await cur.close()
+                if not row:
+                    return None
+
+                binding_id = int(row["id"])
+                channel_chat_id = int(row["channel_chat_id"])
+                await conn.execute("DELETE FROM topic_bindings WHERE id=?", (binding_id,))
+
+                active_cur = await conn.execute(
+                    "SELECT COUNT(1) AS cnt FROM topic_bindings WHERE channel_chat_id=? AND active=1",
+                    (channel_chat_id,),
+                )
+                active_row = await active_cur.fetchone()
+                await active_cur.close()
+                remaining_active = int((active_row["cnt"] if active_row else 0) or 0)
+                released = remaining_active == 0
+                if released:
+                    await conn.execute(
+                        "UPDATE channels SET in_use=0, updated_at=? WHERE chat_id=?",
+                        (now, channel_chat_id),
+                    )
+
+                await conn.commit()
+                return {
+                    "source_group_id": int(row["source_group_id"]),
+                    "topic_id": int(row["topic_id"]),
+                    "channel_chat_id": channel_chat_id,
+                    "released": released,
+                }
+
     async def detach_channel_bindings(self, channel_chat_id: int) -> None:
         await self._execute(
             "UPDATE topic_bindings SET active=0, updated_at=? WHERE channel_chat_id=?",

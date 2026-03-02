@@ -97,3 +97,17 @@ async def set_binding_active(
     state = get_state(request)
     await state.db.set_binding_active(source_group_id, topic_id, payload.active)
     return {"ok": True}
+
+
+@router.delete("/{source_group_id}/{topic_id}")
+async def unbind_topic(source_group_id: int, topic_id: int, request: Request):
+    state = get_state(request)
+    removed = await state.db.unbind_topic(source_group_id=source_group_id, topic_id=topic_id)
+    if removed is None:
+        raise HTTPException(status_code=404, detail="绑定不存在")
+
+    cleanup = await state.db.resolve_topic_recovery_state(
+        source_group_id=source_group_id,
+        topic_id=topic_id,
+    )
+    return {"ok": True, "removed": removed, "cleanup": cleanup}
