@@ -887,6 +887,7 @@ function wireActions() {
       const summary =
         `扫描 ${result.scanned}，不可访问 ${result.unavailable}，` +
         `新增入队 ${result.enqueued}，已在队列 ${result.already_queued || 0}，` +
+        `临时错误 ${result.transient_errors || 0}，` +
         `跳过(任务组停用) ${result.skipped_source_disabled}`;
       setRecoveryActionStatus(`手动巡检完成（${elapsedSeconds.toFixed(1)}s）：${summary}`, "ok");
     } catch (error) {

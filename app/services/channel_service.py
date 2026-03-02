@@ -4,6 +4,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from typing import Any
+from urllib import error as urlerror
 from urllib import request as urlrequest
 
 from telethon import errors as tg_errors
@@ -265,6 +266,10 @@ class ChannelService:
             return "Bot 在该频道无访问权限"
         if "too many requests" in low or "retry after" in low:
             return "Bot 请求过于频繁，请稍后重试"
+        if "timed out" in low or "timeout" in low:
+            return "Bot 探测请求超时，请稍后重试"
+        if "temporary failure" in low or "temporarily unavailable" in low:
+            return "Bot 探测网络临时异常，请稍后重试"
         return text
 
     @staticmethod
@@ -277,6 +282,54 @@ class ChannelService:
             return int(matched.group(1))
         except Exception:
             return 0
+
+    @staticmethod
+    def is_transient_probe_error_text(error_text: str | None) -> bool:
+        low = str(error_text or "").lower()
+        if not low:
+            return False
+        transient_keywords = (
+            "retry after",
+            "too many requests",
+            "请求过于频繁",
+            "timed out",
+            "timeout",
+            "temporary failure",
+            "temporarily unavailable",
+            "service unavailable",
+            "bad gateway",
+            "gateway timeout",
+            "connection reset",
+            "network is unreachable",
+            "name or service not known",
+            "http 429",
+            "http 502",
+            "http 503",
+            "http 504",
+        )
+        return any(word in low for word in transient_keywords)
+
+    @staticmethod
+    def _extract_bot_api_http_error(http_exc: urlerror.HTTPError) -> str:
+        status_code = int(getattr(http_exc, "code", 0) or 0)
+        reason = str(getattr(http_exc, "reason", "") or "").strip()
+        try:
+            raw = http_exc.read().decode("utf-8", errors="ignore")
+            payload = json.loads(raw)
+            description = str(payload.get("description") or "").strip()
+            retry_after = int(((payload.get("parameters") or {}).get("retry_after") or 0))
+            if description:
+                if retry_after > 0 and "retry after" not in description.lower():
+                    return f"{description} (retry after {retry_after})"
+                return description
+        except Exception:
+            pass
+
+        if status_code and reason:
+            return f"HTTP {status_code}: {reason}"
+        if status_code:
+            return f"HTTP {status_code}"
+        return str(http_exc)
 
     async def _bot_api_request(
         self,
@@ -309,8 +362,14 @@ class ChannelService:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urlrequest.urlopen(req, timeout=timeout_seconds) as resp:
-            raw = resp.read().decode("utf-8")
+        try:
+            with urlrequest.urlopen(req, timeout=timeout_seconds) as resp:
+                raw = resp.read().decode("utf-8")
+        except urlerror.HTTPError as http_exc:
+            raise RuntimeError(self._extract_bot_api_http_error(http_exc)) from http_exc
+        except urlerror.URLError as net_exc:
+            reason = str(getattr(net_exc, "reason", "") or "").strip()
+            raise RuntimeError(reason or "Bot API 网络请求失败") from net_exc
         data = json.loads(raw)
         if not data.get("ok"):
             raise RuntimeError(data.get("description") or f"Bot API {method} 失败")

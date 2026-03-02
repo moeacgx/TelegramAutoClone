@@ -197,8 +197,9 @@ async def run_monitor_once(request: Request):
     result = await state.monitor_service.scan_once()
     elapsed_ms = int((time.monotonic() - started) * 1000)
     logger.info(
-        "手动巡检完成: scanned=%s unavailable=%s enqueued=%s already_queued=%s skipped_source_disabled=%s elapsed_ms=%s",
+        "手动巡检完成: scanned=%s transient_errors=%s unavailable=%s enqueued=%s already_queued=%s skipped_source_disabled=%s elapsed_ms=%s",
         result.get("scanned", 0),
+        result.get("transient_errors", 0),
         result.get("unavailable", 0),
         result.get("enqueued", 0),
         result.get("already_queued", 0),

@@ -49,6 +49,7 @@ class MonitorService:
     async def scan_once(self) -> dict[str, int]:
         scanned = 0
         skipped_source_disabled = 0
+        transient_errors = 0
         unavailable = 0
         enqueued = 0
         already_queued = 0
@@ -63,6 +64,17 @@ class MonitorService:
                 int(binding["channel_chat_id"])
             )
             if ok:
+                continue
+
+            if self.channel_service.is_transient_probe_error_text(error_text):
+                transient_errors += 1
+                logger.warning(
+                    "巡检遇到临时错误，跳过失效判定: source_group_id=%s topic_id=%s channel=%s reason=%s",
+                    binding["source_group_id"],
+                    binding["topic_id"],
+                    binding["channel_chat_id"],
+                    error_text or "临时错误",
+                )
                 continue
 
             unavailable += 1
@@ -110,6 +122,7 @@ class MonitorService:
         return {
             "scanned": scanned,
             "skipped_source_disabled": skipped_source_disabled,
+            "transient_errors": transient_errors,
             "unavailable": unavailable,
             "enqueued": enqueued,
             "already_queued": already_queued,
