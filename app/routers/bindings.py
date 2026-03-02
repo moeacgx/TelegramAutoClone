@@ -79,7 +79,12 @@ async def bind_topic(payload: BindRequest, request: Request):
         topic_id=payload.topic_id,
         channel_chat_id=channel_chat_id,
     )
-    return {"ok": True, "binding": binding}
+
+    cleanup = await state.db.resolve_topic_recovery_state(
+        source_group_id=payload.source_group_id,
+        topic_id=payload.topic_id,
+    )
+    return {"ok": True, "binding": binding, "cleanup": cleanup}
 
 
 @router.post("/{source_group_id}/{topic_id}/active")

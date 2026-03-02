@@ -106,6 +106,38 @@ class Database:
                 "last_cloned_message_id",
                 "INTEGER NOT NULL DEFAULT 0",
             )
+            # 清理历史重复活跃任务，避免后续唯一索引创建失败。
+            await conn.execute(
+                """
+                WITH ranked AS (
+                    SELECT
+                        id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY source_group_id, topic_id
+                            ORDER BY
+                                CASE status
+                                    WHEN 'running' THEN 0
+                                    WHEN 'stopping' THEN 1
+                                    WHEN 'waiting_standby' THEN 2
+                                    WHEN 'pending' THEN 3
+                                    ELSE 9
+                                END,
+                                id DESC
+                        ) AS rn
+                    FROM recovery_queue
+                    WHERE status IN ('pending','running','stopping','waiting_standby')
+                )
+                DELETE FROM recovery_queue
+                WHERE id IN (SELECT id FROM ranked WHERE rn > 1)
+                """
+            )
+            await conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_recovery_active_topic_unique
+                ON recovery_queue(source_group_id, topic_id)
+                WHERE status IN ('pending','running','stopping','waiting_standby')
+                """
+            )
             await conn.commit()
 
     async def _ensure_column(
@@ -621,6 +653,66 @@ class Database:
                 await cur.close()
                 return int(rowcount if rowcount is not None and rowcount >= 0 else 0)
 
+    async def resolve_topic_recovery_state(self, source_group_id: int, topic_id: int) -> dict[str, int]:
+        """
+        手动重新绑定频道后，清理该话题的旧失效状态，避免后台恢复循环继续干预新绑定频道。
+        - 删除该话题封禁记录
+        - 删除非运行中的恢复任务
+        - 将运行中的恢复任务标记为 stopping，等待安全退出
+        """
+        now = self._now()
+        async with self._write_lock:
+            async with aiosqlite.connect(self.db_path) as conn:
+                banned_cur = await conn.execute(
+                    "DELETE FROM banned_channels WHERE source_group_id=? AND topic_id=?",
+                    (source_group_id, topic_id),
+                )
+                banned_deleted = int(
+                    banned_cur.rowcount if banned_cur.rowcount is not None and banned_cur.rowcount >= 0 else 0
+                )
+                await banned_cur.close()
+
+                queue_delete_cur = await conn.execute(
+                    """
+                    DELETE FROM recovery_queue
+                    WHERE source_group_id=? AND topic_id=?
+                      AND status NOT IN ('running','stopping')
+                    """,
+                    (source_group_id, topic_id),
+                )
+                queue_deleted = int(
+                    queue_delete_cur.rowcount
+                    if queue_delete_cur.rowcount is not None and queue_delete_cur.rowcount >= 0
+                    else 0
+                )
+                await queue_delete_cur.close()
+
+                queue_stop_cur = await conn.execute(
+                    """
+                    UPDATE recovery_queue
+                    SET status='stopping',
+                        last_error='手动绑定频道，已停止旧恢复任务',
+                        updated_at=?
+                    WHERE source_group_id=? AND topic_id=?
+                      AND status='running'
+                    """,
+                    (now, source_group_id, topic_id),
+                )
+                running_marked_stopping = int(
+                    queue_stop_cur.rowcount
+                    if queue_stop_cur.rowcount is not None and queue_stop_cur.rowcount >= 0
+                    else 0
+                )
+                await queue_stop_cur.close()
+
+                await conn.commit()
+
+                return {
+                    "banned_deleted": banned_deleted,
+                    "queue_deleted": queue_deleted,
+                    "running_marked_stopping": running_marked_stopping,
+                }
+
     async def enqueue_recovery_with_status(
         self,
         source_group_id: int,
@@ -628,30 +720,57 @@ class Database:
         old_channel_chat_id: int,
         reason: str,
     ) -> tuple[int, bool]:
-        existing = await self._fetch_one(
-            """
-            SELECT id FROM recovery_queue
-            WHERE source_group_id=? AND topic_id=? AND status IN ('pending','running','waiting_standby')
-            ORDER BY id DESC
-            LIMIT 1
-            """,
-            (source_group_id, topic_id),
-        )
-        if existing:
-            return int(existing["id"]), False
-
         now = self._now()
-        queue_id = await self._execute(
-            """
-            INSERT INTO recovery_queue(
-                source_group_id, topic_id, old_channel_chat_id, reason,
-                status, retry_count, last_cloned_message_id, created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, 'pending', 0, 0, ?, ?)
-            """,
-            (source_group_id, topic_id, old_channel_chat_id, reason, now, now),
-        )
-        return queue_id, True
+        async with self._write_lock:
+            async with aiosqlite.connect(self.db_path) as conn:
+                conn.row_factory = aiosqlite.Row
+                existing_cur = await conn.execute(
+                    """
+                    SELECT id FROM recovery_queue
+                    WHERE source_group_id=? AND topic_id=?
+                      AND status IN ('pending','running','stopping','waiting_standby')
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (source_group_id, topic_id),
+                )
+                existing = await existing_cur.fetchone()
+                await existing_cur.close()
+                if existing:
+                    return int(existing["id"]), False
+
+                try:
+                    cur = await conn.execute(
+                        """
+                        INSERT INTO recovery_queue(
+                            source_group_id, topic_id, old_channel_chat_id, reason,
+                            status, retry_count, last_cloned_message_id, created_at, updated_at
+                        )
+                        VALUES (?, ?, ?, ?, 'pending', 0, 0, ?, ?)
+                        """,
+                        (source_group_id, topic_id, old_channel_chat_id, reason, now, now),
+                    )
+                    queue_id = int(cur.lastrowid)
+                    await cur.close()
+                    await conn.commit()
+                    return queue_id, True
+                except aiosqlite.IntegrityError:
+                    # 并发场景下唯一索引兜底，返回已存在任务。
+                    existing_cur = await conn.execute(
+                        """
+                        SELECT id FROM recovery_queue
+                        WHERE source_group_id=? AND topic_id=?
+                          AND status IN ('pending','running','stopping','waiting_standby')
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """,
+                        (source_group_id, topic_id),
+                    )
+                    existing = await existing_cur.fetchone()
+                    await existing_cur.close()
+                    if existing:
+                        return int(existing["id"]), False
+                    raise
 
     async def enqueue_recovery(
         self,
@@ -675,29 +794,56 @@ class Database:
         channel_chat_id: int,
         reason: str = "手动触发恢复任务",
     ) -> int:
-        existing = await self._fetch_one(
-            """
-            SELECT id FROM recovery_queue
-            WHERE source_group_id=? AND topic_id=? AND status IN ('pending','running','stopping','waiting_standby')
-            ORDER BY id DESC
-            LIMIT 1
-            """,
-            (source_group_id, topic_id),
-        )
-        if existing:
-            return int(existing["id"])
-
         now = self._now()
-        return await self._execute(
-            """
-            INSERT INTO recovery_queue(
-                source_group_id, topic_id, old_channel_chat_id, new_channel_chat_id, reason,
-                status, retry_count, last_cloned_message_id, created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, 'pending', 0, 0, ?, ?)
-            """,
-            (source_group_id, topic_id, channel_chat_id, channel_chat_id, reason, now, now),
-        )
+        async with self._write_lock:
+            async with aiosqlite.connect(self.db_path) as conn:
+                conn.row_factory = aiosqlite.Row
+                existing_cur = await conn.execute(
+                    """
+                    SELECT id FROM recovery_queue
+                    WHERE source_group_id=? AND topic_id=?
+                      AND status IN ('pending','running','stopping','waiting_standby')
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (source_group_id, topic_id),
+                )
+                existing = await existing_cur.fetchone()
+                await existing_cur.close()
+                if existing:
+                    return int(existing["id"])
+
+                try:
+                    cur = await conn.execute(
+                        """
+                        INSERT INTO recovery_queue(
+                            source_group_id, topic_id, old_channel_chat_id, new_channel_chat_id, reason,
+                            status, retry_count, last_cloned_message_id, created_at, updated_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, 'pending', 0, 0, ?, ?)
+                        """,
+                        (source_group_id, topic_id, channel_chat_id, channel_chat_id, reason, now, now),
+                    )
+                    queue_id = int(cur.lastrowid)
+                    await cur.close()
+                    await conn.commit()
+                    return queue_id
+                except aiosqlite.IntegrityError:
+                    existing_cur = await conn.execute(
+                        """
+                        SELECT id FROM recovery_queue
+                        WHERE source_group_id=? AND topic_id=?
+                          AND status IN ('pending','running','stopping','waiting_standby')
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """,
+                        (source_group_id, topic_id),
+                    )
+                    existing = await existing_cur.fetchone()
+                    await existing_cur.close()
+                    if existing:
+                        return int(existing["id"])
+                    raise
 
     async def list_recovery_queue(self) -> list[dict[str, Any]]:
         return await self._fetch_all(

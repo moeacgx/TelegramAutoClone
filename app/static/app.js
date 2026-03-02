@@ -217,7 +217,7 @@ async function refreshTopics() {
       }
       try {
         button.disabled = true;
-        await api("/api/bindings", {
+        const result = await api("/api/bindings", {
           method: "POST",
           body: JSON.stringify({
             source_group_id: currentSourceId,
@@ -227,6 +227,14 @@ async function refreshTopics() {
         });
         await refreshBindings();
         await refreshTopics();
+        const cleanup = result.cleanup || {};
+        const queueDeleted = Number(cleanup.queue_deleted || 0);
+        const runningStopped = Number(cleanup.running_marked_stopping || 0);
+        if (queueDeleted > 0 || runningStopped > 0) {
+          alert(
+            `绑定成功：已清理旧恢复状态（删除队列 ${queueDeleted}，标记停止运行中任务 ${runningStopped}）`
+          );
+        }
       } catch (error) {
         alert(`绑定失败: ${error.message}`);
       } finally {
