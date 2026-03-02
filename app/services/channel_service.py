@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from pathlib import Path
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -9,6 +10,7 @@ from urllib import request as urlrequest
 
 from telethon import errors as tg_errors
 from telethon import functions
+from telethon.tl import types as tl_types
 from telethon.tl.types import Channel
 from telethon.utils import get_peer_id
 
@@ -221,15 +223,82 @@ class ChannelService:
             "standby_count": len(await self.db.list_standby_channels()),
         }
 
+    @staticmethod
+    def _is_not_modified_error(exc: Exception) -> bool:
+        low = str(exc).lower()
+        return "not modified" in low
+
+    @staticmethod
+    def _friendly_channel_profile_error(exc: Exception, action: str) -> str:
+        text = str(exc).strip()
+        low = text.lower()
+        if isinstance(exc, tg_errors.ChatAdminRequiredError) or "chatadminrequirederror" in low:
+            return f"Bot 不是该频道管理员，无法更新频道{action}"
+        if "chat_restricted" in low:
+            return f"频道受限，无法更新频道{action}"
+        if "channelprivateerror" in low or isinstance(exc, tg_errors.ChannelPrivateError):
+            return f"频道不可访问，无法更新频道{action}"
+        if "not enough rights" in low or "have no rights" in low:
+            return f"Bot 权限不足，无法更新频道{action}"
+        return text or f"更新频道{action}失败"
+
+    def _resolve_topic_avatar_file(self, avatar_path: str | None) -> Path | None:
+        name = str(avatar_path or "").strip()
+        if not name:
+            return None
+        safe_name = Path(name).name
+        if safe_name != name:
+            return None
+        return Path(self.telegram.settings.topic_avatar_dir) / safe_name
+
     async def rename_channel(self, channel_chat_id: int, new_title: str) -> None:
         entity = await self.telegram.bot_client.get_entity(channel_chat_id)
-        await self.telegram.bot_client(
-            functions.channels.EditTitleRequest(
-                channel=entity,
-                title=(new_title or "未命名话题")[:128],
+        try:
+            await self.telegram.bot_client(
+                functions.channels.EditTitleRequest(
+                    channel=entity,
+                    title=(new_title or "未命名话题")[:128],
+                )
             )
-        )
+        except Exception as exc:
+            if not self._is_not_modified_error(exc):
+                raise RuntimeError(self._friendly_channel_profile_error(exc, "标题")) from exc
         await self.db.mark_channel_last_seen(channel_chat_id, title=(new_title or "未命名话题")[:128])
+
+    async def set_channel_avatar(self, channel_chat_id: int, avatar_path: str) -> None:
+        avatar_file = self._resolve_topic_avatar_file(avatar_path)
+        if avatar_file is None or not avatar_file.exists():
+            raise RuntimeError("频道头像文件不存在，请重新上传")
+
+        raw_bytes = await asyncio.to_thread(avatar_file.read_bytes)
+        if not raw_bytes:
+            raise RuntimeError("频道头像文件为空，请重新上传")
+
+        entity = await self.telegram.bot_client.get_entity(channel_chat_id)
+        try:
+            uploaded = await self.telegram.bot_client.upload_file(raw_bytes, file_name=avatar_file.name)
+            await self.telegram.bot_client(
+                functions.channels.EditPhotoRequest(
+                    channel=entity,
+                    photo=tl_types.InputChatUploadedPhoto(file=uploaded),
+                )
+            )
+        except Exception as exc:
+            if not self._is_not_modified_error(exc):
+                raise RuntimeError(self._friendly_channel_profile_error(exc, "头像")) from exc
+
+    async def apply_topic_profile(
+        self,
+        channel_chat_id: int,
+        topic_title: str,
+        topic_avatar_path: str | None = None,
+    ) -> dict[str, bool]:
+        await self.rename_channel(channel_chat_id, topic_title)
+        avatar_applied = False
+        if str(topic_avatar_path or "").strip():
+            await self.set_channel_avatar(channel_chat_id, topic_avatar_path)
+            avatar_applied = True
+        return {"title_applied": True, "avatar_applied": avatar_applied}
 
     @staticmethod
     def _friendly_channel_access_error(exc: Exception, actor: str) -> str:

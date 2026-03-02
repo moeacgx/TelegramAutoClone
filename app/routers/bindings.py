@@ -53,7 +53,6 @@ async def bind_topic(payload: BindRequest, request: Request):
         raise HTTPException(status_code=400, detail="仅支持绑定频道")
 
     channel_chat_id = int(get_peer_id(entity))
-    channel_title = (getattr(entity, "title", None) or str(channel_chat_id)).strip()
 
     ok, error_text = await state.channel_service.check_channel_access(channel_chat_id)
     if not ok:
@@ -62,9 +61,16 @@ async def bind_topic(payload: BindRequest, request: Request):
             detail=error_text or "Bot 无法访问或无权限发送到该频道，请确认 Bot 已在频道内且具备管理员发送权限",
         )
 
+    topic_title = str(topic.get("title") or payload.topic_id)
+    await state.channel_service.apply_topic_profile(
+        channel_chat_id=channel_chat_id,
+        topic_title=topic_title,
+        topic_avatar_path=str(topic.get("avatar_path") or ""),
+    )
+
     await state.db.upsert_channel(
         chat_id=channel_chat_id,
-        title=channel_title,
+        title=topic_title,
         is_standby=False,
         in_use=True,
     )

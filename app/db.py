@@ -38,6 +38,8 @@ class Database:
                     source_group_id INTEGER NOT NULL,
                     topic_id INTEGER NOT NULL,
                     title TEXT NOT NULL,
+                    avatar_path TEXT,
+                    avatar_updated_at TEXT,
                     enabled INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -96,6 +98,8 @@ class Database:
                 """
             )
             await self._ensure_column(conn, "channels", "admin_check_at", "TEXT")
+            await self._ensure_column(conn, "topics", "avatar_path", "TEXT")
+            await self._ensure_column(conn, "topics", "avatar_updated_at", "TEXT")
             await self._ensure_column(
                 conn,
                 "recovery_queue",
@@ -341,6 +345,22 @@ class Database:
         await self._execute(
             "UPDATE topics SET enabled=?, updated_at=? WHERE source_group_id=? AND topic_id=?",
             (1 if enabled else 0, self._now(), source_group_id, topic_id),
+        )
+
+    async def set_topic_avatar(
+        self,
+        source_group_id: int,
+        topic_id: int,
+        avatar_path: str | None,
+    ) -> None:
+        now = self._now()
+        await self._execute(
+            """
+            UPDATE topics
+            SET avatar_path=?, avatar_updated_at=?, updated_at=?
+            WHERE source_group_id=? AND topic_id=?
+            """,
+            (avatar_path, now, now, source_group_id, topic_id),
         )
 
     async def list_enabled_topics(self, source_group_id: int) -> list[dict[str, Any]]:

@@ -78,9 +78,15 @@ async def start_manual_recovery(payload: ManualRecoveryRequest, request: Request
             detail=error_text or "Bot 无法访问或无权限发送到该频道，请确认 Bot 已在频道内且具备管理员发送权限",
         )
 
+    await state.channel_service.apply_topic_profile(
+        channel_chat_id=channel_chat_id,
+        topic_title=str(topic.get("title") or payload.topic_id),
+        topic_avatar_path=str(topic.get("avatar_path") or ""),
+    )
+
     await state.db.upsert_channel(
         chat_id=channel_chat_id,
-        title=channel_title,
+        title=str(topic.get("title") or channel_title),
         is_standby=False,
         in_use=True,
     )

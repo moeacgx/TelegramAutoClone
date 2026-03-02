@@ -163,6 +163,12 @@ async function refreshTopics() {
   for (const topic of topics) {
     const tr = document.createElement("tr");
     const binding = bindingMap.get(String(topic.topic_id));
+    const avatarConfigured = !!(topic.avatar_path && String(topic.avatar_path).trim());
+    const avatarUrl = avatarConfigured
+      ? `/api/topics/${currentSourceId}/${topic.topic_id}/avatar?v=${encodeURIComponent(
+          topic.avatar_updated_at || topic.updated_at || ""
+        )}`
+      : "";
 
     tr.innerHTML = `
       <td>${topic.topic_id}</td>
@@ -175,6 +181,15 @@ async function refreshTopics() {
         <button data-topic-id="${topic.topic_id}" data-type="bind">绑定</button>
         <button data-topic-id="${topic.topic_id}" data-type="start-recovery">开始恢复</button>
         ${binding ? `<small>[${binding.active ? "生效" : "停用"}] ${binding.channel_title || ""}</small>` : ""}
+      </td>
+      <td>
+        <div>
+          <small>${avatarConfigured ? "已配置头像" : "未配置头像"}</small>
+          ${avatarConfigured ? `<img class="topic-avatar-preview" src="${avatarUrl}" alt="avatar" />` : ""}
+        </div>
+        <input type="file" accept="image/*" data-topic-id="${topic.topic_id}" data-type="avatar-file" />
+        <button data-topic-id="${topic.topic_id}" data-type="upload-avatar">上传头像</button>
+        <button data-topic-id="${topic.topic_id}" data-type="clear-avatar" ${avatarConfigured ? "" : "disabled"}>清空头像</button>
       </td>
     `;
 
@@ -251,6 +266,65 @@ async function refreshTopics() {
         alert(`已为 topic_id=${topicId} 创建并执行恢复任务`);
       } catch (error) {
         alert(`创建恢复任务失败: ${error.message}`);
+      } finally {
+        button.disabled = false;
+      }
+    });
+  });
+
+  body.querySelectorAll("button[data-type='upload-avatar']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const topicId = Number(button.dataset.topicId);
+      const input = body.querySelector(`input[data-type='avatar-file'][data-topic-id='${topicId}']`);
+      const file = input && input.files && input.files.length > 0 ? input.files[0] : null;
+      if (!file) {
+        alert("请先选择头像图片");
+        return;
+      }
+
+      try {
+        button.disabled = true;
+        const formData = new FormData();
+        formData.append("avatar", file);
+        const response = await fetch(`/api/topics/${currentSourceId}/${topicId}/avatar`, {
+          method: "POST",
+          body: formData,
+          credentials: "same-origin",
+        });
+        const text = await response.text();
+        const data = text ? JSON.parse(text) : {};
+        if (!response.ok) {
+          throw new Error(data.detail || JSON.stringify(data));
+        }
+
+        if (data.apply_warning) {
+          alert(`头像已保存，但同步到已绑定频道失败：${data.apply_warning}`);
+        } else if (data.applied_channel_chat_id) {
+          alert(`头像已保存，并已同步到绑定频道 ${data.applied_channel_chat_id}`);
+        } else {
+          alert("头像已保存");
+        }
+        await refreshTopics();
+      } catch (error) {
+        alert(`上传头像失败: ${error.message}`);
+      } finally {
+        button.disabled = false;
+      }
+    });
+  });
+
+  body.querySelectorAll("button[data-type='clear-avatar']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const topicId = Number(button.dataset.topicId);
+      if (!confirm(`确认清空 topic_id=${topicId} 的头像配置吗？`)) {
+        return;
+      }
+      try {
+        button.disabled = true;
+        await api(`/api/topics/${currentSourceId}/${topicId}/avatar`, { method: "DELETE" });
+        await refreshTopics();
+      } catch (error) {
+        alert(`清空头像失败: ${error.message}`);
       } finally {
         button.disabled = false;
       }

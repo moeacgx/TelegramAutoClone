@@ -1,6 +1,10 @@
+import asyncio
+import io
 import logging
+from pathlib import Path
 from typing import Any
 
+from PIL import Image, ImageOps, UnidentifiedImageError
 from telethon import functions
 from telethon.tl.types import Channel
 from telethon.utils import get_peer_id
@@ -10,10 +14,45 @@ from app.services.telegram_manager import TelegramManager
 
 
 class TopicService:
-    def __init__(self, db: Database, telegram: TelegramManager):
+    def __init__(self, db: Database, telegram: TelegramManager, topic_avatar_dir: str):
         self.db = db
         self.telegram = telegram
         self.logger = logging.getLogger(__name__)
+        self.topic_avatar_dir = Path(topic_avatar_dir)
+        self.topic_avatar_dir.mkdir(parents=True, exist_ok=True)
+
+    def _topic_avatar_filename(self, source_group_id: int, topic_id: int) -> str:
+        return f"{int(source_group_id)}_{int(topic_id)}.jpg"
+
+    def _resolve_avatar_file_path(self, avatar_path: str | None) -> Path | None:
+        name = str(avatar_path or "").strip()
+        if not name:
+            return None
+        safe_name = Path(name).name
+        if safe_name != name:
+            return None
+        return self.topic_avatar_dir / safe_name
+
+    @staticmethod
+    def _normalize_avatar_image(raw_bytes: bytes) -> bytes:
+        # Telegram 频道头像对尺寸/比例较敏感，这里统一做居中裁剪 + 512x512 JPEG 压缩。
+        with Image.open(io.BytesIO(raw_bytes)) as image:
+            image = ImageOps.exif_transpose(image)
+            image = image.convert("RGB")
+            width, height = image.size
+            if width <= 0 or height <= 0:
+                raise ValueError("无效图片尺寸")
+
+            side = min(width, height)
+            left = (width - side) // 2
+            top = (height - side) // 2
+            image = image.crop((left, top, left + side, top + side))
+            resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+            image = image.resize((512, 512), resampling)
+
+            output = io.BytesIO()
+            image.save(output, format="JPEG", quality=85, optimize=True)
+            return output.getvalue()
 
     async def _get_topics_by_ids(
         self,
@@ -182,7 +221,17 @@ class TopicService:
         source_group = await self.db.get_source_group_by_id(source_group_id)
         if not source_group:
             raise ValueError("任务组不存在")
-        return await self.db.delete_source_group(source_group_id)
+        topics = await self.db.list_topics(source_group_id)
+        result = await self.db.delete_source_group(source_group_id)
+        for topic in topics:
+            avatar_path = self._resolve_avatar_file_path(topic.get("avatar_path"))
+            if avatar_path is None or not avatar_path.exists():
+                continue
+            try:
+                await asyncio.to_thread(avatar_path.unlink)
+            except FileNotFoundError:
+                continue
+        return result
 
     async def list_topics(self, source_group_id: int | None = None) -> list[dict[str, Any]]:
         return await self.db.list_topics(source_group_id)
@@ -192,3 +241,57 @@ class TopicService:
 
     async def set_source_group_enabled(self, source_group_id: int, enabled: bool) -> None:
         await self.db.set_source_group_enabled(source_group_id, enabled)
+
+    async def save_topic_avatar(
+        self,
+        source_group_id: int,
+        topic_id: int,
+        raw_bytes: bytes,
+    ) -> dict[str, Any]:
+        topic = await self.db.get_topic(source_group_id, topic_id)
+        if not topic:
+            raise ValueError("话题不存在")
+        if not raw_bytes:
+            raise ValueError("头像文件为空")
+
+        try:
+            encoded = await asyncio.to_thread(self._normalize_avatar_image, raw_bytes)
+        except (UnidentifiedImageError, OSError, ValueError) as exc:
+            raise ValueError("不支持的图片格式（建议 JPG/PNG/WebP）") from exc
+
+        avatar_name = self._topic_avatar_filename(source_group_id, topic_id)
+        file_path = self.topic_avatar_dir / avatar_name
+        await asyncio.to_thread(file_path.write_bytes, encoded)
+        await self.db.set_topic_avatar(source_group_id, topic_id, avatar_name)
+
+        updated_topic = await self.db.get_topic(source_group_id, topic_id)
+        if updated_topic is None:
+            raise RuntimeError("保存头像后读取话题失败")
+        return updated_topic
+
+    async def clear_topic_avatar(self, source_group_id: int, topic_id: int) -> dict[str, Any]:
+        topic = await self.db.get_topic(source_group_id, topic_id)
+        if not topic:
+            raise ValueError("话题不存在")
+
+        old_avatar_path = self._resolve_avatar_file_path(topic.get("avatar_path"))
+        await self.db.set_topic_avatar(source_group_id, topic_id, None)
+        if old_avatar_path and old_avatar_path.exists():
+            try:
+                await asyncio.to_thread(old_avatar_path.unlink)
+            except FileNotFoundError:
+                pass
+
+        updated_topic = await self.db.get_topic(source_group_id, topic_id)
+        if updated_topic is None:
+            raise RuntimeError("清理头像后读取话题失败")
+        return updated_topic
+
+    async def get_topic_avatar_file(self, source_group_id: int, topic_id: int) -> Path | None:
+        topic = await self.db.get_topic(source_group_id, topic_id)
+        if not topic:
+            return None
+        avatar_path = self._resolve_avatar_file_path(topic.get("avatar_path"))
+        if avatar_path is None or not avatar_path.exists():
+            return None
+        return avatar_path

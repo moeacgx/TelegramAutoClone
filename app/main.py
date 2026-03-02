@@ -38,7 +38,7 @@ async def lifespan(app: FastAPI):
     telegram = TelegramManager(settings)
     await telegram.start()
 
-    topic_service = TopicService(db, telegram)
+    topic_service = TopicService(db, telegram, settings.topic_avatar_dir)
     channel_service = ChannelService(db, telegram)
     bot_channel_sync_service = BotChannelSyncService(db, settings)
     clone_service = CloneService(telegram)

@@ -75,7 +75,6 @@ class RecoveryWorker:
                         raise RuntimeError("没有可用备用频道")
 
                     new_channel_id = int(standby_channel["chat_id"])
-                    await self.channel_service.rename_channel(new_channel_id, topic["title"])
 
                     await self.db.consume_standby_channel(new_channel_id)
                     await self.db.detach_channel_bindings(old_channel_id)
@@ -85,6 +84,12 @@ class RecoveryWorker:
                         channel_chat_id=new_channel_id,
                     )
                     await self.db.mark_recovery_assigned_channel(queue_id, new_channel_id)
+
+                await self.channel_service.apply_topic_profile(
+                    channel_chat_id=new_channel_id,
+                    topic_title=str(topic.get("title") or topic_id),
+                    topic_avatar_path=str(topic.get("avatar_path") or ""),
+                )
 
                 old_channel_title = await self._get_channel_title(old_channel_id)
                 new_channel_title = await self._get_channel_title(new_channel_id)
