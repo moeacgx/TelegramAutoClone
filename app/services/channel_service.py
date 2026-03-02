@@ -242,6 +242,8 @@ class ChannelService:
             return f"该频道当前不可访问，请确认 {actor} 仍在频道中且具备访问权限"
         if isinstance(exc, tg_errors.ChannelInvalidError) or "channelinvaliderror" in low:
             return "频道无效，请检查频道 ID/@用户名/链接是否正确"
+        if "could not find the input entity for peerchannel" in low:
+            return f"{actor}当前会话未找到该频道实体缓存，请先在 Telegram 客户端打开该频道后重试"
         if "auth key unregistered" in low or "unauthorized" in low:
             return f"{actor}未登录，无法校验该频道权限"
         return text
@@ -255,6 +257,43 @@ class ChannelService:
             return False
         return True
 
+    @staticmethod
+    def _is_entity_not_found_error(exc: Exception) -> bool:
+        text = str(exc).lower()
+        return "could not find the input entity for peerchannel" in text
+
+    @staticmethod
+    def _entity_chat_id(entity: Any) -> int | None:
+        try:
+            return int(get_peer_id(entity))
+        except Exception:
+            raw_id = getattr(entity, "id", None)
+            if raw_id is None:
+                raw_id = getattr(entity, "channel_id", None)
+            if raw_id is None:
+                return None
+            try:
+                value = int(raw_id)
+            except Exception:
+                return None
+            if value < 0:
+                return value
+            return int(f"-100{value}")
+
+    async def _find_dialog_entity_by_chat_id(self, client: Any, channel_chat_id: int) -> Any | None:
+        try:
+            dialogs = await client.get_dialogs(limit=2000)
+            for dialog in dialogs:
+                entity = getattr(dialog, "entity", None)
+                if not entity:
+                    continue
+                entity_chat_id = self._entity_chat_id(entity)
+                if entity_chat_id == int(channel_chat_id):
+                    return entity
+        except Exception as exc:
+            logger.warning("通过 dialogs 回填频道实体失败: channel=%s reason=%s", channel_chat_id, exc)
+        return None
+
     async def _check_actor_access(
         self,
         *,
@@ -266,7 +305,16 @@ class ChannelService:
     ) -> tuple[bool, str | None, str | None]:
         for attempt in range(2):
             try:
-                entity = await client.get_entity(channel_chat_id)
+                try:
+                    entity = await client.get_entity(channel_chat_id)
+                except Exception as exc:
+                    if not self._is_entity_not_found_error(exc):
+                        raise
+                    # Telethon 仅凭 ID 可能命中不到本地实体缓存；回填 dialogs 后再校验，避免误判“频道失效”。
+                    hydrated_entity = await self._find_dialog_entity_by_chat_id(client, channel_chat_id)
+                    if not hydrated_entity:
+                        return False, None, self._friendly_channel_access_error(exc, actor)
+                    entity = hydrated_entity
                 # 强制走一次远端接口，避免 get_entity 命中本地缓存导致“频道已失效却被判定可用”。
                 await client(functions.channels.GetFullChannelRequest(channel=entity))
                 permissions = await client.get_permissions(entity, "me")

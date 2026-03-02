@@ -25,24 +25,47 @@ class FakePermissions:
 
 
 class FakeClient:
-    def __init__(self, *, permissions: FakePermissions | None = None, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        permissions: FakePermissions | None = None,
+        error: Exception | None = None,
+        get_entity_error: Exception | None = None,
+        call_error: Exception | None = None,
+        permissions_error: Exception | None = None,
+        dialogs: list[object] | None = None,
+    ) -> None:
         self.permissions = permissions or FakePermissions()
         self.error = error
+        self.get_entity_error = get_entity_error
+        self.call_error = call_error
+        self.permissions_error = permissions_error
+        self.dialogs = dialogs or []
 
     async def get_entity(self, channel_chat_id: int):
         if self.error is not None:
             raise self.error
+        if self.get_entity_error is not None:
+            raise self.get_entity_error
         return SimpleNamespace(title=f"channel-{channel_chat_id}")
 
     async def __call__(self, _request):
         if self.error is not None:
             raise self.error
+        if self.call_error is not None:
+            raise self.call_error
         return SimpleNamespace()
 
     async def get_permissions(self, _entity, _who: str):
         if self.error is not None:
             raise self.error
+        if self.permissions_error is not None:
+            raise self.permissions_error
         return self.permissions
+
+    async def get_dialogs(self, limit: int = 2000):
+        _ = limit
+        return list(self.dialogs)
 
 
 class FakeDB:
@@ -107,3 +130,27 @@ async def test_check_channel_access_user_failure_does_not_block_when_bot_ok() ->
     assert ok
     assert error_text is None
     assert db.marked == [(-100125, "channel--100125")]
+
+
+@pytest.mark.asyncio
+async def test_check_channel_access_entity_cache_miss_can_be_hydrated_from_dialogs() -> None:
+    db = FakeDB()
+    channel_chat_id = -1003483845368
+    internal_channel_id = 3483845368
+    cached_entity = SimpleNamespace(id=internal_channel_id, title="频道A")
+    bot = FakeClient(
+        permissions=FakePermissions(is_admin=True),
+        get_entity_error=RuntimeError(
+            "Could not find the input entity for PeerChannel(channel_id=3483845368) (PeerChannel)."
+        ),
+        dialogs=[SimpleNamespace(entity=cached_entity)],
+    )
+    user = FakeClient(permissions=FakePermissions(is_admin=True))
+    telegram = FakeTelegram(bot_client=bot, user_client=user)
+    service = ChannelService(db, telegram)
+
+    ok, error_text = await service.check_channel_access(channel_chat_id)
+
+    assert ok
+    assert error_text is None
+    assert db.marked == [(channel_chat_id, "频道A")]
