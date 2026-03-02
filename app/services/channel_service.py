@@ -226,7 +226,11 @@ class ChannelService:
     @staticmethod
     def _is_not_modified_error(exc: Exception) -> bool:
         low = str(exc).lower()
-        return "not modified" in low
+        return (
+            "not modified" in low
+            or "wasn't modified" in low
+            or "chat_not_modified" in low
+        )
 
     @staticmethod
     def _friendly_channel_profile_error(exc: Exception, action: str) -> str:
