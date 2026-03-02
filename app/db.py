@@ -553,7 +553,11 @@ class Database:
     async def list_banned_channels(self) -> list[dict[str, Any]]:
         return await self._fetch_all(
             """
-            SELECT b.*, s.title AS source_title, t.title AS topic_title
+            SELECT
+                b.*,
+                s.title AS source_title,
+                t.title AS topic_title,
+                c.title AS channel_title
             FROM banned_channels b
             JOIN (
                 SELECT source_group_id, topic_id, channel_chat_id, MAX(id) AS latest_id
@@ -562,6 +566,7 @@ class Database:
             ) latest ON latest.latest_id = b.id
             LEFT JOIN source_groups s ON s.id=b.source_group_id
             LEFT JOIN topics t ON t.source_group_id=b.source_group_id AND t.topic_id=b.topic_id
+            LEFT JOIN channels c ON c.chat_id=b.channel_chat_id
             ORDER BY b.id DESC
             LIMIT 300
             """
@@ -677,10 +682,17 @@ class Database:
     async def list_recovery_queue(self) -> list[dict[str, Any]]:
         return await self._fetch_all(
             """
-            SELECT q.*, s.title AS source_title, t.title AS topic_title
+            SELECT
+                q.*,
+                s.title AS source_title,
+                t.title AS topic_title,
+                old_c.title AS old_channel_title,
+                new_c.title AS new_channel_title
             FROM recovery_queue q
             LEFT JOIN source_groups s ON s.id=q.source_group_id
             LEFT JOIN topics t ON t.source_group_id=q.source_group_id AND t.topic_id=q.topic_id
+            LEFT JOIN channels old_c ON old_c.chat_id=q.old_channel_chat_id
+            LEFT JOIN channels new_c ON new_c.chat_id=q.new_channel_chat_id
             ORDER BY q.id DESC
             LIMIT 500
             """

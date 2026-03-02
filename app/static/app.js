@@ -336,7 +336,13 @@ async function refreshBanned() {
   container.innerHTML = "";
   for (const item of list) {
     const li = document.createElement("li");
-    li.textContent = `source_group_id=${item.source_group_id}, topic_id=${item.topic_id}, channel=${item.channel_chat_id}, reason=${item.reason || ""}`;
+    const sourceLabel = item.source_title || `任务组${item.source_group_id}`;
+    const topicLabel = item.topic_title || `话题${item.topic_id}`;
+    const channelLabel = item.channel_title || "未知频道";
+    li.textContent =
+      `任务组=${sourceLabel}，话题=${topicLabel}，` +
+      `频道=${channelLabel} (${item.channel_chat_id})，` +
+      `原因=${item.reason || ""}`;
     container.appendChild(li);
   }
 }
@@ -412,7 +418,13 @@ async function refreshQueue() {
 
     li.innerHTML = `
       <div>
-        <b>#${item.id}</b> status=${statusLabel}, source_group_id=${item.source_group_id}, topic_id=${item.topic_id}, old=${item.old_channel_chat_id}, new=${item.new_channel_chat_id || "-"}, retry=${item.retry_count}, checkpoint=${item.last_cloned_message_id || 0}
+        <b>#${item.id}</b> status=${statusLabel},
+        任务组=${item.source_title || item.source_group_id},
+        话题=${item.topic_title || item.topic_id},
+        旧频道=${item.old_channel_title || "未知频道"} (${item.old_channel_chat_id}),
+        新频道=${item.new_channel_chat_id ? `${item.new_channel_title || "未知频道"} (${item.new_channel_chat_id})` : "-"},
+        retry=${item.retry_count},
+        checkpoint=${item.last_cloned_message_id || 0}
       </div>
       <div>${item.last_error ? `last_error=${item.last_error}` : ""}</div>
     `;
