@@ -47,6 +47,7 @@ async def start_manual_recovery(payload: ManualRecoveryRequest, request: Request
     topic = await state.db.get_topic(payload.source_group_id, payload.topic_id)
     if not topic:
         raise HTTPException(status_code=404, detail="话题不存在")
+    existing_binding = await state.db.get_binding(payload.source_group_id, payload.topic_id)
 
     channel_ref = (payload.channel_ref or "").strip()
     if not channel_ref and payload.channel_chat_id is not None:
@@ -78,11 +79,19 @@ async def start_manual_recovery(payload: ManualRecoveryRequest, request: Request
             detail=error_text or "Bot 无法访问或无权限发送到该频道，请确认 Bot 已在频道内且具备管理员发送权限",
         )
 
-    await state.channel_service.apply_topic_profile(
-        channel_chat_id=channel_chat_id,
-        topic_title=str(topic.get("title") or payload.topic_id),
-        topic_avatar_path=str(topic.get("avatar_path") or ""),
+    bound_same_channel = bool(
+        existing_binding
+        and int(existing_binding.get("active", 0)) == 1
+        and int(existing_binding.get("channel_chat_id") or 0) == channel_chat_id
     )
+    profile_applied = False
+    if not bound_same_channel:
+        await state.channel_service.apply_topic_profile(
+            channel_chat_id=channel_chat_id,
+            topic_title=str(topic.get("title") or payload.topic_id),
+            topic_avatar_path=str(topic.get("avatar_path") or ""),
+        )
+        profile_applied = True
 
     await state.db.upsert_channel(
         chat_id=channel_chat_id,
@@ -105,7 +114,12 @@ async def start_manual_recovery(payload: ManualRecoveryRequest, request: Request
     processed = False
     if payload.run_now:
         processed = await state.recovery_worker.run_once(queue_id=queue_id)
-    return {"ok": True, "queue_id": queue_id, "processed": processed}
+    return {
+        "ok": True,
+        "queue_id": queue_id,
+        "processed": processed,
+        "profile_applied": profile_applied,
+    }
 
 
 @router.post("/recovery/{queue_id}/run-once")

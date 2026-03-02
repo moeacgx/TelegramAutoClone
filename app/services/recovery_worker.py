@@ -85,11 +85,19 @@ class RecoveryWorker:
                     )
                     await self.db.mark_recovery_assigned_channel(queue_id, new_channel_id)
 
-                await self.channel_service.apply_topic_profile(
-                    channel_chat_id=new_channel_id,
-                    topic_title=str(topic.get("title") or topic_id),
-                    topic_avatar_path=str(topic.get("avatar_path") or ""),
-                )
+                if new_channel_id != old_channel_id:
+                    await self.channel_service.apply_topic_profile(
+                        channel_chat_id=new_channel_id,
+                        topic_title=str(topic.get("title") or topic_id),
+                        topic_avatar_path=str(topic.get("avatar_path") or ""),
+                    )
+                else:
+                    logger.info(
+                        "恢复任务命中同频道(old==new)，跳过频道资料同步: queue_id=%s topic_id=%s channel=%s",
+                        queue_id,
+                        topic_id,
+                        new_channel_id,
+                    )
 
                 old_channel_title = await self._get_channel_title(old_channel_id)
                 new_channel_title = await self._get_channel_title(new_channel_id)
