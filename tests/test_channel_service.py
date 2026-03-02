@@ -11,63 +11,6 @@ if "qrcode" not in sys.modules:
 from app.services.channel_service import ChannelService
 
 
-class FakePermissions:
-    def __init__(
-        self,
-        *,
-        is_admin: bool = True,
-        post_messages: bool | None = True,
-        send_messages: bool | None = True,
-    ) -> None:
-        self.is_admin = is_admin
-        self.post_messages = post_messages
-        self.send_messages = send_messages
-
-
-class FakeClient:
-    def __init__(
-        self,
-        *,
-        permissions: FakePermissions | None = None,
-        error: Exception | None = None,
-        get_entity_error: Exception | None = None,
-        call_error: Exception | None = None,
-        permissions_error: Exception | None = None,
-        dialogs: list[object] | None = None,
-    ) -> None:
-        self.permissions = permissions or FakePermissions()
-        self.error = error
-        self.get_entity_error = get_entity_error
-        self.call_error = call_error
-        self.permissions_error = permissions_error
-        self.dialogs = dialogs or []
-
-    async def get_entity(self, channel_chat_id: int):
-        if self.error is not None:
-            raise self.error
-        if self.get_entity_error is not None:
-            raise self.get_entity_error
-        return SimpleNamespace(title=f"channel-{channel_chat_id}")
-
-    async def __call__(self, _request):
-        if self.error is not None:
-            raise self.error
-        if self.call_error is not None:
-            raise self.call_error
-        return SimpleNamespace()
-
-    async def get_permissions(self, _entity, _who: str):
-        if self.error is not None:
-            raise self.error
-        if self.permissions_error is not None:
-            raise self.permissions_error
-        return self.permissions
-
-    async def get_dialogs(self, limit: int = 2000):
-        _ = limit
-        return list(self.dialogs)
-
-
 class FakeDB:
     def __init__(self) -> None:
         self.marked: list[tuple[int, str | None]] = []
@@ -77,80 +20,93 @@ class FakeDB:
 
 
 class FakeTelegram:
-    def __init__(self, *, bot_client: FakeClient, user_client: FakeClient) -> None:
-        self.bot_client = bot_client
-        self.user_client = user_client
+    def __init__(self, bot_token: str = "fake-token") -> None:
+        self.settings = SimpleNamespace(bot_token=bot_token)
+        self.bot_client = SimpleNamespace()
 
 
 @pytest.mark.asyncio
-async def test_check_channel_access_requires_bot_admin() -> None:
+async def test_check_channel_access_send_and_delete_success() -> None:
     db = FakeDB()
-    telegram = FakeTelegram(
-        bot_client=FakeClient(permissions=FakePermissions(is_admin=False)),
-        user_client=FakeClient(permissions=FakePermissions(is_admin=True)),
-    )
+    telegram = FakeTelegram()
     service = ChannelService(db, telegram)
+
+    async def fake_bot_api_request(method: str, payload: dict, timeout_seconds: int = 12):
+        if method == "sendMessage":
+            assert payload["chat_id"] == -100123
+            return {"message_id": 9527, "chat": {"title": "频道A"}}
+        if method == "deleteMessage":
+            assert payload["chat_id"] == -100123
+            assert payload["message_id"] == 9527
+            return True
+        raise AssertionError(f"unexpected method: {method}")
+
+    service._bot_api_request = fake_bot_api_request  # type: ignore[method-assign]
 
     ok, error_text = await service.check_channel_access(-100123)
 
-    assert not ok
-    assert "Bot不是该频道管理员" in str(error_text)
-    assert db.marked == []
+    assert ok
+    assert error_text is None
+    assert db.marked == [(-100123, "频道A")]
 
 
 @pytest.mark.asyncio
-async def test_check_channel_access_requires_bot_send_permission() -> None:
+async def test_check_channel_access_delete_failure_does_not_mark_unavailable() -> None:
     db = FakeDB()
-    telegram = FakeTelegram(
-        bot_client=FakeClient(
-            permissions=FakePermissions(is_admin=True, post_messages=False, send_messages=False)
-        ),
-        user_client=FakeClient(permissions=FakePermissions(is_admin=True)),
-    )
+    telegram = FakeTelegram()
     service = ChannelService(db, telegram)
+
+    async def fake_bot_api_request(method: str, payload: dict, timeout_seconds: int = 12):
+        if method == "sendMessage":
+            return {"message_id": 9528, "chat": {"title": "频道B"}}
+        if method == "deleteMessage":
+            raise RuntimeError("message can't be deleted")
+        raise AssertionError(f"unexpected method: {method}")
+
+    service._bot_api_request = fake_bot_api_request  # type: ignore[method-assign]
 
     ok, error_text = await service.check_channel_access(-100124)
 
+    assert ok
+    assert error_text is None
+    assert db.marked == [(-100124, "频道B")]
+
+
+@pytest.mark.asyncio
+async def test_check_channel_access_send_failure_marks_unavailable() -> None:
+    db = FakeDB()
+    telegram = FakeTelegram()
+    service = ChannelService(db, telegram)
+
+    async def fake_bot_api_request(method: str, payload: dict, timeout_seconds: int = 12):
+        if method == "sendMessage":
+            raise RuntimeError("Forbidden: bot is not a member of the channel chat")
+        raise AssertionError(f"unexpected method: {method}")
+
+    service._bot_api_request = fake_bot_api_request  # type: ignore[method-assign]
+
+    ok, error_text = await service.check_channel_access(-100125)
+
     assert not ok
-    assert "Bot在该频道缺少发送权限" in str(error_text)
+    assert "Bot 不在该频道里" in str(error_text)
     assert db.marked == []
 
 
 @pytest.mark.asyncio
-async def test_check_channel_access_user_failure_does_not_block_when_bot_ok() -> None:
+async def test_check_channel_access_rate_limit_message() -> None:
     db = FakeDB()
-    telegram = FakeTelegram(
-        bot_client=FakeClient(permissions=FakePermissions(is_admin=True)),
-        user_client=FakeClient(error=RuntimeError("user unavailable")),
-    )
+    telegram = FakeTelegram()
     service = ChannelService(db, telegram)
 
-    ok, error_text = await service.check_channel_access(-100125)
+    async def fake_bot_api_request(method: str, payload: dict, timeout_seconds: int = 12):
+        if method == "sendMessage":
+            raise RuntimeError("Too Many Requests: retry after 20")
+        raise AssertionError(f"unexpected method: {method}")
 
-    assert ok
-    assert error_text is None
-    assert db.marked == [(-100125, "channel--100125")]
+    service._bot_api_request = fake_bot_api_request  # type: ignore[method-assign]
 
+    ok, error_text = await service.check_channel_access(-100126)
 
-@pytest.mark.asyncio
-async def test_check_channel_access_entity_cache_miss_can_be_hydrated_from_dialogs() -> None:
-    db = FakeDB()
-    channel_chat_id = -1003483845368
-    internal_channel_id = 3483845368
-    cached_entity = SimpleNamespace(id=internal_channel_id, title="频道A")
-    bot = FakeClient(
-        permissions=FakePermissions(is_admin=True),
-        get_entity_error=RuntimeError(
-            "Could not find the input entity for PeerChannel(channel_id=3483845368) (PeerChannel)."
-        ),
-        dialogs=[SimpleNamespace(entity=cached_entity)],
-    )
-    user = FakeClient(permissions=FakePermissions(is_admin=True))
-    telegram = FakeTelegram(bot_client=bot, user_client=user)
-    service = ChannelService(db, telegram)
-
-    ok, error_text = await service.check_channel_access(channel_chat_id)
-
-    assert ok
-    assert error_text is None
-    assert db.marked == [(channel_chat_id, "频道A")]
+    assert not ok
+    assert "Bot请求过于频繁" in str(error_text)
+    assert db.marked == []
