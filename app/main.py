@@ -74,8 +74,9 @@ async def lifespan(app: FastAPI):
                 if await telegram.is_bot_authorized():
                     result = await monitor_service.scan_once()
                     logger.info(
-                        "monitor_loop 完成: scanned=%s unavailable=%s enqueued=%s already_queued=%s skipped_source_disabled=%s",
+                        "monitor_loop 完成: scanned=%s transient_errors=%s unavailable=%s enqueued=%s already_queued=%s skipped_source_disabled=%s",
                         result.get("scanned", 0),
+                        result.get("transient_errors", 0),
                         result.get("unavailable", 0),
                         result.get("enqueued", 0),
                         result.get("already_queued", 0),
