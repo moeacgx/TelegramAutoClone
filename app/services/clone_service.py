@@ -56,6 +56,7 @@ class CloneService:
         source_chat_id: int,
         target_channel: int,
         message_ids: list[int],
+        on_error: Callable[[Exception], None] | None = None,
     ) -> bool:
         if not message_ids:
             return False
@@ -85,6 +86,8 @@ class CloneService:
                 )
                 await asyncio.sleep(int(flood.seconds) + 1)
             except Exception as exc:
+                if on_error is not None:
+                    on_error(exc)
                 logger.warning(
                     "无引用转发失败，将回退复制: source=%s target=%s ids=%s reason=%s",
                     source_chat_id,
@@ -95,7 +98,12 @@ class CloneService:
                 return False
         return False
 
-    async def _copy_single_message(self, message: Message, target_channel: int) -> bool:
+    async def _copy_single_message(
+        self,
+        message: Message,
+        target_channel: int,
+        on_error: Callable[[Exception], None] | None = None,
+    ) -> bool:
         if not self.is_cloneable(message):
             return False
 
@@ -197,6 +205,8 @@ class CloneService:
                 )
                 await asyncio.sleep(int(flood.seconds) + 1)
             except Exception as exc:
+                if on_error is not None:
+                    on_error(exc)
                 logger.warning(
                     "复制发送失败: msg_id=%s target=%s reason=%s",
                     message_id,
@@ -212,21 +222,39 @@ class CloneService:
         message: Message,
         target_channel: int,
         source_chat_id: int | None = None,
+        raise_on_send_error: bool = False,
     ) -> bool:
         if not self.is_cloneable(message):
             return False
 
         source_id = int(source_chat_id or getattr(message, "chat_id", 0) or 0)
+        send_error: Exception | None = None
+
+        def capture_error(exc: Exception) -> None:
+            nonlocal send_error
+            send_error = exc
+
         if source_id:
             forwarded = await self._forward_ids_no_reference(
                 source_chat_id=source_id,
                 target_channel=target_channel,
                 message_ids=[int(message.id)],
+                on_error=capture_error,
             )
             if forwarded:
                 return True
 
-        return await self._copy_single_message(message, target_channel)
+        copied = await self._copy_single_message(
+            message,
+            target_channel,
+            on_error=capture_error,
+        )
+        if copied:
+            return True
+
+        if raise_on_send_error and send_error is not None:
+            raise send_error
+        return False
 
     async def _collect_media_group_messages(
         self,

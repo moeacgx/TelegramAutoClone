@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 
 from telethon import events
 
@@ -53,38 +53,49 @@ class ListenerService:
             if topic_id == 0:
                 return
 
-            topic = await self.db.get_topic(int(source_group["id"]), int(topic_id))
+            source_group_id = int(source_group["id"])
+            topic_id = int(topic_id)
+
+            topic = await self.db.get_topic(source_group_id, topic_id)
             if not topic or int(topic.get("enabled", 0)) != 1:
                 return
 
-            binding = await self.db.get_binding(int(source_group["id"]), int(topic_id))
+            binding = await self.db.get_binding(source_group_id, topic_id)
             if not binding or int(binding.get("active", 0)) != 1:
                 return
 
             try:
-                await self.clone_service.clone_message_no_reference(
+                cloned = await self.clone_service.clone_message_no_reference(
                     message=message,
                     target_channel=int(binding["channel_chat_id"]),
+                    raise_on_send_error=True,
                 )
+                if not cloned:
+                    logger.info(
+                        "消息不可克隆，已跳过: source_group_id=%s topic_id=%s msg_id=%s",
+                        source_group_id,
+                        topic_id,
+                        getattr(message, "id", 0),
+                    )
             except Exception as exc:
                 if not is_channel_unavailable_error(exc):
                     raise
                 await self.db.add_banned_channel(
-                    source_group_id=int(source_group["id"]),
-                    topic_id=int(topic_id),
+                    source_group_id=source_group_id,
+                    topic_id=topic_id,
                     channel_chat_id=int(binding["channel_chat_id"]),
                     reason=str(exc),
                 )
                 queue_id, created = await self.db.enqueue_recovery_with_status(
-                    source_group_id=int(source_group["id"]),
-                    topic_id=int(topic_id),
+                    source_group_id=source_group_id,
+                    topic_id=topic_id,
                     old_channel_chat_id=int(binding["channel_chat_id"]),
                     reason=str(exc),
                 )
                 if not created:
                     logger.info(
                         "监听到失效频道但恢复任务已存在，跳过重复通知: source_group_id=%s topic_id=%s channel=%s queue_id=%s",
-                        source_group["id"],
+                        source_group_id,
                         topic_id,
                         binding["channel_chat_id"],
                         queue_id,
@@ -94,7 +105,7 @@ class ListenerService:
                 channel_title = str((channel_row or {}).get("title") or binding["channel_chat_id"])
                 await self.telegram.send_notification(
                     f"⚠️ 实时克隆发现频道失效\n"
-                    f"任务组: {source_group.get('title', source_group['id'])} (id={source_group['id']})\n"
+                    f"任务组: {source_group.get('title', source_group_id)} (id={source_group_id})\n"
                     f"话题: {topic.get('title', topic_id)} (topic_id={topic_id})\n"
                     f"旧频道: {channel_title} ({binding['channel_chat_id']})\n"
                     f"已进入恢复队列 #{queue_id}"

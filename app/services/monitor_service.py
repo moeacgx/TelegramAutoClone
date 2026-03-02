@@ -23,9 +23,12 @@ def is_channel_unavailable_error(exc: Exception) -> bool:
         "channelprivateerror",
         "channelinvaliderror",
         "chatadminrequirederror",
+        "chat_write_forbidden",
         "forbidden",
         "private channel",
         "have no rights",
+        "violates the telegram terms of service",
+        "couldn't be displayed on your device",
     ]
     return any(word in text for word in keywords)
 
