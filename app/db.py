@@ -1050,9 +1050,10 @@ class Database:
         async with self._write_lock:
             async with aiosqlite.connect(self.db_path) as conn:
                 conn.row_factory = aiosqlite.Row
+                await conn.execute("BEGIN IMMEDIATE")
                 cur = await conn.execute(
                     """
-                    SELECT * FROM recovery_queue
+                    SELECT id FROM recovery_queue
                     WHERE status IN ('pending','waiting_standby')
                     ORDER BY id ASC
                     LIMIT 1
@@ -1061,23 +1062,41 @@ class Database:
                 row = await cur.fetchone()
                 await cur.close()
                 if not row:
+                    await conn.commit()
                     return None
 
+                queue_id = int(row["id"])
                 now = self._now()
-                await conn.execute(
-                    "UPDATE recovery_queue SET status='running', updated_at=? WHERE id=?",
-                    (now, row["id"]),
+                update_cur = await conn.execute(
+                    """
+                    UPDATE recovery_queue
+                    SET status='running', updated_at=?
+                    WHERE id=? AND status IN ('pending','waiting_standby')
+                    """,
+                    (now, queue_id),
                 )
+                changed = int(
+                    update_cur.rowcount if update_cur.rowcount is not None and update_cur.rowcount >= 0 else 0
+                )
+                await update_cur.close()
+                if changed == 0:
+                    await conn.commit()
+                    return None
+
+                data_cur = await conn.execute(
+                    "SELECT * FROM recovery_queue WHERE id=?",
+                    (queue_id,),
+                )
+                data_row = await data_cur.fetchone()
+                await data_cur.close()
                 await conn.commit()
-                data = dict(row)
-                data["status"] = "running"
-                data["updated_at"] = now
-                return data
+                return dict(data_row) if data_row else None
 
     async def claim_recovery_by_id(self, queue_id: int) -> dict[str, Any] | None:
         async with self._write_lock:
             async with aiosqlite.connect(self.db_path) as conn:
                 conn.row_factory = aiosqlite.Row
+                await conn.execute("BEGIN IMMEDIATE")
                 cur = await conn.execute(
                     "SELECT * FROM recovery_queue WHERE id=?",
                     (queue_id,),
@@ -1085,24 +1104,39 @@ class Database:
                 row = await cur.fetchone()
                 await cur.close()
                 if not row:
+                    await conn.commit()
                     return None
 
                 status = str(row["status"])
-                if status == "done":
-                    return None
-                if status == "running":
+                if status not in {"pending", "waiting_standby"}:
+                    await conn.commit()
                     return None
 
                 now = self._now()
-                await conn.execute(
-                    "UPDATE recovery_queue SET status='running', updated_at=? WHERE id=?",
-                    (now, row["id"]),
+                update_cur = await conn.execute(
+                    """
+                    UPDATE recovery_queue
+                    SET status='running', updated_at=?
+                    WHERE id=? AND status IN ('pending','waiting_standby')
+                    """,
+                    (now, int(row["id"])),
                 )
+                changed = int(
+                    update_cur.rowcount if update_cur.rowcount is not None and update_cur.rowcount >= 0 else 0
+                )
+                await update_cur.close()
+                if changed == 0:
+                    await conn.commit()
+                    return None
+
+                data_cur = await conn.execute(
+                    "SELECT * FROM recovery_queue WHERE id=?",
+                    (int(row["id"]),),
+                )
+                data_row = await data_cur.fetchone()
+                await data_cur.close()
                 await conn.commit()
-                data = dict(row)
-                data["status"] = "running"
-                data["updated_at"] = now
-                return data
+                return dict(data_row) if data_row else None
 
     async def mark_recovery_assigned_channel(self, queue_id: int, new_channel_chat_id: int) -> None:
         await self._execute(
