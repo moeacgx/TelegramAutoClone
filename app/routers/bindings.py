@@ -59,7 +59,7 @@ async def bind_topic(payload: BindRequest, request: Request):
     if not ok:
         raise HTTPException(
             status_code=400,
-            detail=error_text or "Bot 或用户账号无法访问该频道，请确认至少一方具备管理员权限",
+            detail=error_text or "Bot 无法访问或无权限发送到该频道，请确认 Bot 已在频道内且具备管理员发送权限",
         )
 
     await state.db.upsert_channel(

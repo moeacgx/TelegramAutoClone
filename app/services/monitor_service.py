@@ -51,6 +51,7 @@ class MonitorService:
         skipped_source_disabled = 0
         unavailable = 0
         enqueued = 0
+        already_queued = 0
         bindings = await self.db.list_active_bindings()
         for binding in bindings:
             scanned += 1
@@ -78,6 +79,7 @@ class MonitorService:
                 reason=error_text or "频道不可访问",
             )
             if not created:
+                already_queued += 1
                 logger.info(
                     "失效频道已在恢复队列中，跳过重复通知: source_group_id=%s topic_id=%s channel=%s queue_id=%s",
                     binding["source_group_id"],
@@ -110,4 +112,5 @@ class MonitorService:
             "skipped_source_disabled": skipped_source_disabled,
             "unavailable": unavailable,
             "enqueued": enqueued,
+            "already_queued": already_queued,
         }

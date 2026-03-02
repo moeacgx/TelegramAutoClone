@@ -1,3 +1,6 @@
+import logging
+import time
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from telethon.tl.types import Channel
@@ -6,6 +9,7 @@ from telethon.utils import get_peer_id
 from app.deps import get_state
 
 router = APIRouter(prefix="/api/queue", tags=["queue"])
+logger = logging.getLogger(__name__)
 
 
 class QueueActionRequest(BaseModel):
@@ -71,7 +75,7 @@ async def start_manual_recovery(payload: ManualRecoveryRequest, request: Request
     if not ok:
         raise HTTPException(
             status_code=400,
-            detail=error_text or "Bot 或用户账号无法访问该频道，请确认至少一方具备管理员权限",
+            detail=error_text or "Bot 无法访问或无权限发送到该频道，请确认 Bot 已在频道内且具备管理员发送权限",
         )
 
     await state.db.upsert_channel(
@@ -188,5 +192,17 @@ async def reset_running_recovery_tasks(request: Request):
 @router.post("/monitor/run-once")
 async def run_monitor_once(request: Request):
     state = get_state(request)
+    started = time.monotonic()
+    logger.info("手动巡检开始")
     result = await state.monitor_service.scan_once()
-    return {"ok": True, **result}
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    logger.info(
+        "手动巡检完成: scanned=%s unavailable=%s enqueued=%s already_queued=%s skipped_source_disabled=%s elapsed_ms=%s",
+        result.get("scanned", 0),
+        result.get("unavailable", 0),
+        result.get("enqueued", 0),
+        result.get("already_queued", 0),
+        result.get("skipped_source_disabled", 0),
+        elapsed_ms,
+    )
+    return {"ok": True, "elapsed_ms": elapsed_ms, **result}

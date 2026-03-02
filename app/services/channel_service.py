@@ -246,50 +246,88 @@ class ChannelService:
             return f"{actor}未登录，无法校验该频道权限"
         return text
 
+    @staticmethod
+    def _has_send_permission(permissions: Any) -> bool:
+        # Telethon 在不同会话/实体上权限字段可能略有差异，优先检查常见发送权限字段。
+        post_messages = getattr(permissions, "post_messages", None)
+        send_messages = getattr(permissions, "send_messages", None)
+        if post_messages is False or send_messages is False:
+            return False
+        return True
+
+    async def _check_actor_access(
+        self,
+        *,
+        actor: str,
+        client: Any,
+        channel_chat_id: int,
+        require_admin: bool,
+        require_send_permission: bool,
+    ) -> tuple[bool, str | None, str | None]:
+        for attempt in range(2):
+            try:
+                entity = await client.get_entity(channel_chat_id)
+                # 强制走一次远端接口，避免 get_entity 命中本地缓存导致“频道已失效却被判定可用”。
+                await client(functions.channels.GetFullChannelRequest(channel=entity))
+                permissions = await client.get_permissions(entity, "me")
+
+                if require_admin and (not permissions or not bool(getattr(permissions, "is_admin", False))):
+                    return False, None, f"{actor}不是该频道管理员"
+
+                if require_send_permission and permissions and not self._has_send_permission(permissions):
+                    return False, None, f"{actor}在该频道缺少发送权限"
+
+                title = str(getattr(entity, "title", channel_chat_id))
+                return True, title, None
+            except tg_errors.FloodWaitError as exc:
+                wait_seconds = int(getattr(exc, "seconds", 0) or 0)
+                if attempt == 0 and 0 < wait_seconds <= 15:
+                    logger.warning(
+                        "频道访问检查触发 FloodWait，等待 %ss 后重试: actor=%s channel=%s",
+                        wait_seconds,
+                        actor,
+                        channel_chat_id,
+                    )
+                    await asyncio.sleep(wait_seconds + 1)
+                    continue
+                return False, None, f"{actor}请求过于频繁，请 {max(wait_seconds, 1)} 秒后重试"
+            except Exception as exc:
+                return False, None, self._friendly_channel_access_error(exc, actor)
+        return False, None, f"{actor}频道访问检查失败"
+
     async def check_channel_access(self, channel_chat_id: int) -> tuple[bool, str | None]:
-        checks: list[tuple[str, Any]] = [
-            ("Bot", self.telegram.bot_client),
-            ("用户账号", self.telegram.user_client),
-        ]
-        errors: list[str] = []
+        # 目标频道可用性必须以 Bot 为准：克隆发送链路实际由 Bot 执行。
+        bot_ok, bot_title, bot_error = await self._check_actor_access(
+            actor="Bot",
+            client=self.telegram.bot_client,
+            channel_chat_id=channel_chat_id,
+            require_admin=True,
+            require_send_permission=True,
+        )
+        if not bot_ok:
+            return False, bot_error or "Bot 无法访问目标频道"
 
-        for actor, client in checks:
-            for attempt in range(2):
-                try:
-                    entity = await client.get_entity(channel_chat_id)
-                    # 强制走一次远端接口，避免 get_entity 命中本地缓存导致“频道已失效却被判定可用”。
-                    await client(functions.channels.GetFullChannelRequest(channel=entity))
-                    permissions = await client.get_permissions(entity, "me")
-                    if permissions and not permissions.is_admin:
-                        errors.append(f"{actor}不是该频道管理员")
-                        break
-                    title = getattr(entity, "title", str(channel_chat_id))
-                    await self.db.mark_channel_last_seen(channel_chat_id, title=title)
-                    return True, None
-                except tg_errors.FloodWaitError as exc:
-                    wait_seconds = int(getattr(exc, "seconds", 0) or 0)
-                    if attempt == 0 and 0 < wait_seconds <= 15:
-                        logger.warning(
-                            "频道访问检查触发 FloodWait，等待 %ss 后重试: actor=%s channel=%s",
-                            wait_seconds,
-                            actor,
-                            channel_chat_id,
-                        )
-                        await asyncio.sleep(wait_seconds + 1)
-                        continue
-                    errors.append(f"{actor}请求过于频繁，请 {max(wait_seconds, 1)} 秒后重试")
-                    break
-                except Exception as exc:
-                    errors.append(self._friendly_channel_access_error(exc, actor))
-                    break
+        if bot_title:
+            await self.db.mark_channel_last_seen(channel_chat_id, title=bot_title)
+        else:
+            await self.db.mark_channel_last_seen(channel_chat_id)
 
-        if errors:
-            deduped: list[str] = []
-            for item in errors:
-                if item not in deduped:
-                    deduped.append(item)
-            return False, "；".join(deduped[:2])
-        return False, "频道访问检查失败"
+        # 用户账号访问仅作告警参考，不阻断目标频道判定。
+        user_ok, _, user_error = await self._check_actor_access(
+            actor="用户账号",
+            client=self.telegram.user_client,
+            channel_chat_id=channel_chat_id,
+            require_admin=False,
+            require_send_permission=False,
+        )
+        if not user_ok and user_error:
+            logger.info(
+                "频道访问检查: Bot 正常，用户账号检查失败(不阻断): channel=%s reason=%s",
+                channel_chat_id,
+                user_error,
+            )
+
+        return True, None
 
     async def list_channels(self) -> list[dict[str, Any]]:
         return await self.db.list_channels()

@@ -345,6 +345,32 @@ li {
   color: var(--muted);
 }
 
+.action-status {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: #f7f9fc;
+}
+
+.action-status.is-busy {
+  color: #8a4b00;
+  border-color: #f1d2a5;
+  background: #fff8ec;
+}
+
+.action-status.is-ok {
+  color: #0f6b44;
+  border-color: #b6e5cf;
+  background: #eefcf4;
+}
+
+.action-status.is-error {
+  color: #a4271a;
+  border-color: #f2b8b0;
+  background: #fff2f1;
+}
+
 .is-hidden {
   display: none !important;
 }

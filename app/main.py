@@ -72,7 +72,15 @@ async def lifespan(app: FastAPI):
             try:
                 await telegram.cleanup()
                 if await telegram.is_bot_authorized():
-                    await monitor_service.scan_once()
+                    result = await monitor_service.scan_once()
+                    logger.info(
+                        "monitor_loop 完成: scanned=%s unavailable=%s enqueued=%s already_queued=%s skipped_source_disabled=%s",
+                        result.get("scanned", 0),
+                        result.get("unavailable", 0),
+                        result.get("enqueued", 0),
+                        result.get("already_queued", 0),
+                        result.get("skipped_source_disabled", 0),
+                    )
             except Exception as exc:
                 logger.exception("monitor_loop 异常: %s", exc)
             await asyncio.sleep(settings.monitor_interval_seconds)

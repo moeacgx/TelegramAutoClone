@@ -38,6 +38,22 @@ function updateStandbySelectedCount() {
   setText("standby-selected-count", String(selectedStandbyIds.size));
 }
 
+function setRecoveryActionStatus(message, level = "info") {
+  const el = document.getElementById("recovery-action-status");
+  if (!el) {
+    return;
+  }
+  el.textContent = `操作状态：${message}`;
+  el.classList.remove("is-busy", "is-ok", "is-error");
+  if (level === "busy") {
+    el.classList.add("is-busy");
+  } else if (level === "ok") {
+    el.classList.add("is-ok");
+  } else if (level === "error") {
+    el.classList.add("is-error");
+  }
+}
+
 async function refreshAuthStatus() {
   const status = await api("/api/auth/status");
   setText("auth-status", JSON.stringify(status, null, 2));
@@ -844,29 +860,59 @@ function wireActions() {
   });
 
   document.getElementById("run-monitor-btn").addEventListener("click", async () => {
+    const button = document.getElementById("run-monitor-btn");
+    const originalText = button.textContent;
     try {
+      button.disabled = true;
+      button.textContent = "巡检中...";
+      setRecoveryActionStatus("正在执行手动巡检，请稍候...", "busy");
+
       const result = await api("/api/queue/monitor/run-once", { method: "POST" });
       await refreshBanned();
       await refreshQueue();
-      alert(
-        `巡检完成：扫描 ${result.scanned}，不可访问 ${result.unavailable}，入队 ${result.enqueued}，跳过(任务组停用) ${result.skipped_source_disabled}`
-      );
+
+      const elapsedSeconds = Number(result.elapsed_ms || 0) / 1000;
+      const summary =
+        `扫描 ${result.scanned}，不可访问 ${result.unavailable}，` +
+        `新增入队 ${result.enqueued}，已在队列 ${result.already_queued || 0}，` +
+        `跳过(任务组停用) ${result.skipped_source_disabled}`;
+      setRecoveryActionStatus(`手动巡检完成（${elapsedSeconds.toFixed(1)}s）：${summary}`, "ok");
     } catch (error) {
+      setRecoveryActionStatus(`手动巡检失败：${error.message}`, "error");
       alert(error.message);
+    } finally {
+      button.disabled = false;
+      button.textContent = originalText;
     }
   });
 
   document.getElementById("run-recovery-btn").addEventListener("click", async () => {
+    const button = document.getElementById("run-recovery-btn");
+    const originalText = button.textContent;
     try {
-      await api("/api/queue/recovery/run-once", { method: "POST" });
+      button.disabled = true;
+      button.textContent = "执行中...";
+      setRecoveryActionStatus("正在执行一个恢复任务...", "busy");
+
+      const result = await api("/api/queue/recovery/run-once", { method: "POST" });
       await refreshQueue();
       await refreshBindings();
       await refreshStandby();
       if (currentSourceId) {
         await refreshTopics();
       }
+
+      if (result.processed) {
+        setRecoveryActionStatus("恢复任务执行完成，已处理 1 个任务。", "ok");
+      } else {
+        setRecoveryActionStatus("恢复任务执行完成：当前无可处理任务。", "ok");
+      }
     } catch (error) {
+      setRecoveryActionStatus(`执行恢复任务失败：${error.message}`, "error");
       alert(error.message);
+    } finally {
+      button.disabled = false;
+      button.textContent = originalText;
     }
   });
 
