@@ -9,9 +9,11 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import get_settings
 from app.db import Database
-from app.routers import auth, bindings, channels, dashboard, panel_auth, queue, source_groups, topics, update
+from app.routers import auth, bindings, channels, dashboard, panel_auth, queue, settings, source_groups, topics, update
+from app.services.app_restart_service import AppRestartService
 from app.services.panel_auth_service import PanelAuthService
 from app.services.channel_service import ChannelService
+from app.services.clone_settings_service import CloneSettingsService
 from app.services.clone_service import CloneService
 from app.services.listener_service import ListenerService
 from app.services.monitor_service import MonitorService
@@ -30,36 +32,40 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    settings = get_settings()
+    settings_obj = get_settings()
 
-    db = Database(settings.database_path)
+    db = Database(settings_obj.database_path)
     await db.init()
 
-    telegram = TelegramManager(settings)
+    telegram = TelegramManager(settings_obj)
     await telegram.start()
 
-    topic_service = TopicService(db, telegram, settings.topic_avatar_dir)
+    topic_service = TopicService(db, telegram, settings_obj.topic_avatar_dir)
     channel_service = ChannelService(db, telegram)
-    bot_channel_sync_service = BotChannelSyncService(db, settings)
-    clone_service = CloneService(telegram)
+    bot_channel_sync_service = BotChannelSyncService(db, settings_obj)
+    clone_settings_service = CloneSettingsService(db)
+    clone_service = CloneService(telegram, db, clone_settings_service)
     listener_service = ListenerService(db, telegram, clone_service)
-    monitor_service = MonitorService(db, telegram, channel_service, settings.monitor_interval_seconds)
-    recovery_worker = RecoveryWorker(db, telegram, clone_service, channel_service, settings)
-    update_service = UpdateService(db, settings, telegram)
-    panel_auth_service = PanelAuthService(settings)
+    monitor_service = MonitorService(db, telegram, channel_service, settings_obj.monitor_interval_seconds)
+    recovery_worker = RecoveryWorker(db, telegram, clone_service, channel_service, settings_obj)
+    restart_service = AppRestartService()
+    update_service = UpdateService(db, settings_obj, telegram, restart_service)
+    panel_auth_service = PanelAuthService(settings_obj)
 
     templates = Jinja2Templates(directory="app/templates")
 
-    app.state.settings = settings
+    app.state.settings = settings_obj
     app.state.db = db
     app.state.telegram = telegram
     app.state.topic_service = topic_service
     app.state.channel_service = channel_service
+    app.state.clone_settings_service = clone_settings_service
     app.state.clone_service = clone_service
     app.state.bot_channel_sync_service = bot_channel_sync_service
     app.state.listener_service = listener_service
     app.state.monitor_service = monitor_service
     app.state.recovery_worker = recovery_worker
+    app.state.app_restart_service = restart_service
     app.state.update_service = update_service
     app.state.panel_auth = panel_auth_service
     app.state.templates = templates
@@ -84,7 +90,7 @@ async def lifespan(app: FastAPI):
                     )
             except Exception as exc:
                 logger.exception("monitor_loop 异常: %s", exc)
-            await asyncio.sleep(settings.monitor_interval_seconds)
+            await asyncio.sleep(settings_obj.monitor_interval_seconds)
 
     async def standby_loop():
         while True:
@@ -93,7 +99,7 @@ async def lifespan(app: FastAPI):
                     await channel_service.refresh_standby_channels()
             except Exception as exc:
                 logger.exception("standby_loop 异常: %s", exc)
-            await asyncio.sleep(settings.standby_refresh_seconds)
+            await asyncio.sleep(settings_obj.standby_refresh_seconds)
 
     async def bot_updates_loop():
         while True:
@@ -102,7 +108,6 @@ async def lifespan(app: FastAPI):
                 if result.get("warning"):
                     await asyncio.sleep(5)
                     continue
-                # 收到 bot 频道变更后，立即按实时权限重建备用池，避免旧状态残留。
                 if result.get("tracked_channels", 0) > 0 and await telegram.is_bot_authorized():
                     await channel_service.refresh_standby_channels()
             except Exception as exc:
@@ -128,7 +133,7 @@ async def lifespan(app: FastAPI):
                 await update_service.check_and_notify()
             except Exception as exc:
                 logger.exception("update_check_loop 异常: %s", exc)
-            await asyncio.sleep(max(30, int(settings.update_check_interval_seconds)))
+            await asyncio.sleep(max(30, int(settings_obj.update_check_interval_seconds)))
 
     tasks = [
         asyncio.create_task(monitor_loop(), name="monitor_loop"),
@@ -160,4 +165,5 @@ app.include_router(topics.router)
 app.include_router(bindings.router)
 app.include_router(channels.router)
 app.include_router(queue.router)
+app.include_router(settings.router)
 app.include_router(update.router)

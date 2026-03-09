@@ -179,6 +179,31 @@ select {
   height: 16px;
 }
 
+.setting-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.setting-inline input {
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+}
+
+.setting-field {
+  display: inline-flex;
+  align-items: center;
+  min-width: 88px;
+  color: var(--muted);
+}
+
+#download-group-concurrency {
+  min-width: 120px;
+  width: 120px;
+}
+
 .section {
   margin-top: 16px;
   scroll-margin-top: 22px;

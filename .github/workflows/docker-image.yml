@@ -40,6 +40,16 @@ jobs:
         id: vars
         run: echo "image_name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve app version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "build_version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "build_version=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -59,5 +69,7 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_VERSION=${{ steps.version.outputs.build_version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

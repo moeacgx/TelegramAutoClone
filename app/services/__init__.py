@@ -1,3 +1,4 @@
+from app.services.app_restart_service import AppRestartService
 from app.services.bot_channel_sync_service import BotChannelSyncService
 from app.services.channel_service import ChannelService
 from app.services.clone_service import CloneService
@@ -9,6 +10,7 @@ from app.services.topic_service import TopicService
 from app.services.update_service import UpdateService
 
 __all__ = [
+    "AppRestartService",
     "BotChannelSyncService",
     "ChannelService",
     "CloneService",

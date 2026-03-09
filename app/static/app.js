@@ -86,6 +86,18 @@ async function refreshUpdateStatus() {
   setText("update-status", JSON.stringify(status, null, 2));
 }
 
+async function refreshCloneSettings() {
+  const settings = await api("/api/settings/clone");
+  const md5Toggle = document.getElementById("md5-mutation-enabled");
+  const concurrencyInput = document.getElementById("download-group-concurrency");
+  if (md5Toggle) {
+    md5Toggle.checked = !!settings.md5_mutation_enabled;
+  }
+  if (concurrencyInput) {
+    concurrencyInput.value = String(settings.download_group_concurrency ?? 2);
+  }
+}
+
 async function refreshSourceGroups() {
   const list = await api("/api/source-groups");
   updateOverviewCount("overview-source-count", list.length);
@@ -636,6 +648,7 @@ async function refreshQueue() {
 async function refreshAll() {
   await refreshAuthStatus();
   await refreshUpdateStatus();
+  await refreshCloneSettings();
   await refreshSourceGroups();
   await refreshStandby();
   await refreshBindings();
@@ -868,9 +881,9 @@ function wireActions() {
       const result = await api("/api/update/check", { method: "POST" });
       await refreshUpdateStatus();
       if (result.ok && result.has_update) {
-        alert(`检测到新版本：${result.latest_digest}\n请点击“确认并更新”执行升级。`);
+        alert(`检测到新版本：${result.latest_tag}\n请点击“下载更新并重启”执行升级。`);
       } else if (result.ok) {
-        alert("当前已是最新版本。");
+        alert(result.message || "当前已是最新版本。");
       } else {
         alert(result.error || "更新检测失败");
       }
@@ -881,16 +894,35 @@ function wireActions() {
 
   document.getElementById("confirm-update-btn").addEventListener("click", async () => {
     try {
-      if (!confirm("确认执行更新吗？系统将触发 watchtower 拉取并重启容器。")) {
+      if (!confirm("确认下载更新包并重启应用吗？系统会先部署到持久目录，再请求容器重启。")) {
         return;
       }
       const result = await api("/api/update/confirm", { method: "POST" });
       await refreshUpdateStatus();
       if (result.triggered) {
-        alert("已触发更新，请等待容器重启后刷新页面。");
+        alert("更新包已部署，应用即将重启，请稍后刷新页面。");
       } else {
-        alert("已确认最新版本。当前未启用 watchtower HTTP 触发，请手动执行部署更新命令。");
+        alert(result.message || "当前已是最新版本。");
       }
+    } catch (error) {
+      alert(error.message);
+    }
+  });
+
+  document.getElementById("save-clone-settings-btn").addEventListener("click", async () => {
+    try {
+      const md5Toggle = document.getElementById("md5-mutation-enabled");
+      const concurrencyInput = document.getElementById("download-group-concurrency");
+      const downloadGroupConcurrency = Number(concurrencyInput.value || 2);
+      await api("/api/settings/clone", {
+        method: "POST",
+        body: JSON.stringify({
+          md5_mutation_enabled: !!md5Toggle.checked,
+          download_group_concurrency: downloadGroupConcurrency,
+        }),
+      });
+      await refreshCloneSettings();
+      alert("克隆设置已保存");
     } catch (error) {
       alert(error.message);
     }

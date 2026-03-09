@@ -22,6 +22,7 @@
         <button data-target="section-topics-bindings" class="nav-item">话题与绑定</button>
         <button data-target="section-standby" class="nav-item">备用池</button>
         <button data-target="section-recovery" class="nav-item">封禁与恢复</button>
+        <button data-target="section-settings" class="nav-item">系统设置</button>
         <button data-target="section-update" class="nav-item">更新中心</button>
       </nav>
 
@@ -198,6 +199,28 @@
         </div>
       </section>
 
+      <section class="section" id="section-settings">
+        <div class="section-title-row">
+          <h3>系统设置</h3>
+        </div>
+        <div class="panel-card">
+          <div class="row settings-row">
+            <label class="setting-inline">
+              <input id="md5-mutation-enabled" type="checkbox" />
+              下载后修改媒体 MD5
+            </label>
+          </div>
+          <div class="row settings-row">
+            <label class="setting-field" for="download-group-concurrency">下载组并发</label>
+            <input id="download-group-concurrency" type="number" min="1" max="5" step="1" value="2" />
+          </div>
+          <p class="hint">按组并发下载：单个媒体算一组，相册算一组；上传仍按原顺序串行提交。</p>
+          <div class="row">
+            <button id="save-clone-settings-btn">保存设置</button>
+          </div>
+        </div>
+      </section>
+
       <section class="section" id="section-update">
         <div class="section-title-row">
           <h3>系统更新</h3>
@@ -205,7 +228,7 @@
         <div class="panel-card">
           <div class="row">
             <button id="check-update-btn">检查更新</button>
-            <button id="confirm-update-btn">确认并更新</button>
+            <button id="confirm-update-btn">下载更新并重启</button>
           </div>
           <pre id="update-status">加载中...</pre>
         </div>
