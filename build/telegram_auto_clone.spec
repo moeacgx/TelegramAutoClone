@@ -1,4 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
+from pathlib import Path
 from PyInstaller.utils.hooks import collect_all
 
 
@@ -24,14 +25,18 @@ for package_name in (
     binaries += package_binaries
     hiddenimports += package_hiddenimports
 
+root_dir = Path(__file__).resolve().parent.parent
+
 datas += [
-    ("app/static", "app/static"),
-    ("app/templates", "app/templates"),
+    (str(root_dir / "app/static"), "app/static"),
+    (str(root_dir / "app/templates"), "app/templates"),
 ]
 
+entry_script = root_dir / "run_server.py"
+
 a = Analysis(
-    ["run_server.py"],
-    pathex=["."],
+    [str(entry_script)],
+    pathex=[str(root_dir)],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
