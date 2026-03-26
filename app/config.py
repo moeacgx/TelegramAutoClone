@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     database_path: str = Field(default="data/telegram_auto_clone.db", alias="DATABASE_PATH")
     topic_avatar_dir: str = Field(default="data/topic_avatars", alias="TOPIC_AVATAR_DIR")
     sessions_dir: str = Field(default="sessions", alias="SESSIONS_DIR")
+    clone_download_temp_dir: str = Field(default="", alias="CLONE_DOWNLOAD_TEMP_DIR")
 
     notify_chat_id: int | None = Field(default=None, alias="NOTIFY_CHAT_ID")
     monitor_interval_seconds: int = Field(default=60, alias="MONITOR_INTERVAL_SECONDS")

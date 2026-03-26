@@ -16,7 +16,9 @@ async def get_clone_settings(request: Request):
     state = get_state(request)
     try:
         settings = await state.clone_settings_service.get_settings()
-        return settings.to_dict()
+        payload = settings.to_dict()
+        payload["download_temp_dir"] = str(state.settings.clone_download_temp_dir or "").strip()
+        return payload
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

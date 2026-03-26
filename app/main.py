@@ -44,7 +44,12 @@ async def lifespan(app: FastAPI):
     channel_service = ChannelService(db, telegram)
     bot_channel_sync_service = BotChannelSyncService(db, settings_obj)
     clone_settings_service = CloneSettingsService(db)
-    clone_service = CloneService(telegram, db, clone_settings_service)
+    clone_service = CloneService(
+        telegram,
+        db,
+        clone_settings_service,
+        download_temp_dir=settings_obj.clone_download_temp_dir,
+    )
     listener_service = ListenerService(db, telegram, clone_service)
     monitor_service = MonitorService(db, telegram, channel_service, settings_obj.monitor_interval_seconds)
     recovery_worker = RecoveryWorker(db, telegram, clone_service, channel_service, settings_obj)

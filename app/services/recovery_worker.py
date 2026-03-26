@@ -117,6 +117,7 @@ class RecoveryWorker:
                     start_message_id=start_message_id,
                     progress_hook=save_checkpoint,
                     should_stop=check_should_stop,
+                    source_group_id=source_group_id,
                 )
                 resumed_from = int(clone_stats.get("started_min_id") or start_message_id)
 

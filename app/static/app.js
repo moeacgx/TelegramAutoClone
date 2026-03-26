@@ -90,16 +90,25 @@ async function refreshCloneSettings() {
   const settings = await api("/api/settings/clone");
   const md5Toggle = document.getElementById("md5-mutation-enabled");
   const concurrencyInput = document.getElementById("download-group-concurrency");
+  const tempDirEl = document.getElementById("download-temp-dir");
   if (md5Toggle) {
     md5Toggle.checked = !!settings.md5_mutation_enabled;
   }
   if (concurrencyInput) {
     concurrencyInput.value = String(settings.download_group_concurrency ?? 2);
   }
+  if (tempDirEl) {
+    const raw = (settings.download_temp_dir || "").trim();
+    setText("download-temp-dir", raw || "系统默认临时目录");
+  }
 }
 
 async function refreshSourceGroups() {
-  const list = await api("/api/source-groups");
+  const [list, settings] = await Promise.all([
+    api("/api/source-groups"),
+    api("/api/settings/clone"),
+  ]);
+  const globalMd5 = !!settings.md5_mutation_enabled;
   updateOverviewCount("overview-source-count", list.length);
 
   const container = document.getElementById("source-group-list");
@@ -109,13 +118,29 @@ async function refreshSourceGroups() {
   for (const item of list) {
     existingIds.add(Number(item.id));
     const li = document.createElement("li");
+    const override = item.md5_mutation_override;
+    let md5Text = "";
+    let md5Next = "on";
+    if (override === null || typeof override === "undefined") {
+      md5Text = `跟随全局(${globalMd5 ? "开" : "关"})`;
+      md5Next = "on";
+    } else if (Number(override) === 1 || override === true) {
+      md5Text = "强制开启";
+      md5Next = "off";
+    } else {
+      md5Text = "强制关闭";
+      md5Next = "inherit";
+    }
+
     li.innerHTML = `
       <b>${item.title}</b> (${item.chat_id}) [id=${item.id}] [${item.enabled ? "启用" : "停用"}]
+      [MD5:${md5Text}]
       <button data-action="select" data-id="${item.id}">选择</button>
       <button data-action="sync" data-id="${item.id}">同步话题</button>
       <button data-action="toggle" data-id="${item.id}" data-enabled="${item.enabled ? 0 : 1}">
         ${item.enabled ? "停用" : "启用"}
       </button>
+      <button data-action="md5" data-id="${item.id}" data-mode="${md5Next}">切换MD5</button>
       <button data-action="delete" data-id="${item.id}">删除</button>
     `;
     container.appendChild(li);
@@ -170,6 +195,13 @@ async function refreshSourceGroups() {
         alert(
           `任务组 ${id} 已删除：topics=${result.topics || 0}, bindings=${result.topic_bindings || 0}, banned=${result.banned_channels || 0}, queue=${result.recovery_queue || 0}`
         );
+      } else if (action === "md5") {
+        const mode = String(btn.dataset.mode || "inherit");
+        await api(`/api/source-groups/${id}/md5-override`, {
+          method: "POST",
+          body: JSON.stringify({ mode }),
+        });
+        await refreshSourceGroups();
       }
     });
   });

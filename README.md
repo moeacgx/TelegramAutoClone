@@ -50,6 +50,9 @@ PANEL_SESSION_TTL_SECONDS=86400
 管理台新增“系统设置”卡片，支持运行时调整：
 - `下载后修改媒体 MD5`：开启后，媒体消息强制走“下载 → 尝试改写文件 MD5 → 上传”分支。
 - `下载组并发`：按组控制预下载并发；单个媒体算一组，相册算一组，上传仍按原顺序串行提交。
+- `下载临时目录`：用于存放媒体下载与改写的临时文件（可在 `.env` 配置 `CLONE_DOWNLOAD_TEMP_DIR`）。
+
+任务组列表支持单独覆盖 MD5 开关（跟随全局 / 强制开启 / 强制关闭）。
 
 说明：
 - 文本消息不会进入下载分支，仍保留原有 `formatting_entities`。
@@ -101,6 +104,7 @@ docker compose up -d app
 ```text
 UPDATE_REPOSITORY=moeacgx/TelegramAutoClone
 UPDATE_GITHUB_TOKEN=
+CLONE_DOWNLOAD_TEMP_DIR=/app/data/clone_tmp
 SELF_UPDATE_ENABLED=true
 SELF_UPDATE_DOCKER_ONLY=true
 SELF_UPDATE_WORK_DIR=/app/data/self_update

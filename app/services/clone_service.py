@@ -57,10 +57,18 @@ class CloneService:
         telegram: TelegramManager,
         db: Database,
         settings_service: CloneSettingsService | None = None,
+        download_temp_dir: str | None = None,
     ):
         self.telegram = telegram
         self.db = db
         self.settings_service = settings_service or CloneSettingsService(db)
+        self.download_temp_dir = str(download_temp_dir or "").strip() or None
+
+    def _create_temp_dir(self) -> tempfile.TemporaryDirectory:
+        base_dir = self.download_temp_dir
+        if base_dir:
+            Path(base_dir).mkdir(parents=True, exist_ok=True)
+        return tempfile.TemporaryDirectory(prefix="tg_clone_", dir=base_dir)
 
     @staticmethod
     def extract_topic_id(message: Message) -> int | None:
@@ -97,8 +105,8 @@ class CloneService:
         text = getattr(message, "message", None) or getattr(message, "text", None)
         return bool(text and str(text).strip())
 
-    async def _load_runtime_settings(self) -> CloneRuntimeSettings:
-        return await self.settings_service.get_settings()
+    async def _load_runtime_settings(self, source_group_id: int | None = None) -> CloneRuntimeSettings:
+        return await self.settings_service.get_effective_settings(source_group_id)
 
     async def _forward_ids_no_reference(
         self,
@@ -265,11 +273,12 @@ class CloneService:
         target_channel: int,
         source_chat_id: int | None = None,
         raise_on_send_error: bool = False,
+        source_group_id: int | None = None,
     ) -> bool:
         if not self.is_cloneable(message):
             return False
 
-        runtime_settings = await self._load_runtime_settings()
+        runtime_settings = await self._load_runtime_settings(source_group_id)
         source_id = int(source_chat_id or getattr(message, "chat_id", 0) or 0)
         send_error: Exception | None = None
 
@@ -406,7 +415,13 @@ class CloneService:
         logger.info("相册逐条处理完成: source=%s target=%s success=%s total=%s", source_chat_id, target_channel, success, len(messages))
         return success
 
-    async def _iter_history_units(self, source_chat_id: int, topic_id: int, effective_start_message_id: int):
+    async def _iter_history_units(
+        self,
+        source_chat_id: int,
+        topic_id: int,
+        effective_start_message_id: int,
+        source_group_id: int | None = None,
+    ):
         processed_groups: set[int] = set()
         async for message in self.telegram.user_client.iter_messages(
             source_chat_id,
@@ -416,7 +431,7 @@ class CloneService:
             if not self.in_topic(message, topic_id):
                 continue
 
-            runtime_settings = await self._load_runtime_settings()
+            runtime_settings = await self._load_runtime_settings(source_group_id)
             grouped_id = getattr(message, "grouped_id", None)
             current_message_id = int(getattr(message, "id", 0) or 0)
             if grouped_id:
@@ -459,7 +474,7 @@ class CloneService:
         if not unit.needs_prefetch_download or not unit.messages:
             return unit
 
-        temp_dir_obj = tempfile.TemporaryDirectory(prefix="tg_clone_")
+        temp_dir_obj = self._create_temp_dir()
         unit.temp_dir_obj = temp_dir_obj
         try:
             for index, message in enumerate(unit.messages):
@@ -540,7 +555,7 @@ class CloneService:
         runtime_settings: CloneRuntimeSettings,
         on_error: Callable[[Exception], None] | None = None,
     ) -> bool:
-        temp_dir_obj = tempfile.TemporaryDirectory(prefix="tg_clone_")
+        temp_dir_obj = self._create_temp_dir()
         try:
             prepared_items: list[PreparedMediaItem] = []
             for index, message in enumerate(messages):
@@ -692,6 +707,7 @@ class CloneService:
         start_message_id: int | None = None,
         progress_hook: Callable[[int], Awaitable[None]] | None = None,
         should_stop: Callable[[], Awaitable[bool]] | None = None,
+        source_group_id: int | None = None,
     ) -> dict[str, Any]:
         total = 0
         cloned = 0
@@ -755,6 +771,7 @@ class CloneService:
                 source_chat_id=source_chat_id,
                 topic_id=topic_id,
                 effective_start_message_id=effective_start_message_id,
+                source_group_id=source_group_id,
             ):
                 if should_stop and await should_stop():
                     raise RuntimeError("任务已手动停止")

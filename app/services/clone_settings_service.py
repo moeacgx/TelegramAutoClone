@@ -62,6 +62,18 @@ class CloneSettingsService:
             download_group_concurrency=self._parse_download_group_concurrency(concurrency_value),
         )
 
+    async def get_effective_settings(self, source_group_id: int | None = None) -> CloneRuntimeSettings:
+        base = await self.get_settings()
+        if not source_group_id:
+            return base
+        override = await self.db.get_source_group_md5_override(int(source_group_id))
+        if override is None:
+            return base
+        return CloneRuntimeSettings(
+            md5_mutation_enabled=bool(override),
+            download_group_concurrency=base.download_group_concurrency,
+        )
+
     async def update_settings(
         self,
         *,

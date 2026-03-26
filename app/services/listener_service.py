@@ -69,6 +69,7 @@ class ListenerService:
                     message=message,
                     target_channel=int(binding["channel_chat_id"]),
                     raise_on_send_error=True,
+                    source_group_id=source_group_id,
                 )
                 if not cloned:
                     logger.info(

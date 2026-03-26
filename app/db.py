@@ -29,6 +29,7 @@ class Database:
                     chat_id INTEGER NOT NULL UNIQUE,
                     title TEXT NOT NULL,
                     enabled INTEGER NOT NULL DEFAULT 1,
+                    md5_mutation_override INTEGER,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -100,6 +101,7 @@ class Database:
             await self._ensure_column(conn, "channels", "admin_check_at", "TEXT")
             await self._ensure_column(conn, "topics", "avatar_path", "TEXT")
             await self._ensure_column(conn, "topics", "avatar_updated_at", "TEXT")
+            await self._ensure_column(conn, "source_groups", "md5_mutation_override", "INTEGER")
             await self._ensure_column(
                 conn,
                 "recovery_queue",
@@ -244,6 +246,25 @@ class Database:
             "UPDATE source_groups SET enabled=?, updated_at=? WHERE id=?",
             (1 if enabled else 0, self._now(), source_group_id),
         )
+
+    async def set_source_group_md5_override(self, source_group_id: int, override: bool | None) -> None:
+        value = None if override is None else (1 if override else 0)
+        await self._execute(
+            "UPDATE source_groups SET md5_mutation_override=?, updated_at=? WHERE id=?",
+            (value, self._now(), source_group_id),
+        )
+
+    async def get_source_group_md5_override(self, source_group_id: int) -> bool | None:
+        row = await self._fetch_one(
+            "SELECT md5_mutation_override FROM source_groups WHERE id=?",
+            (source_group_id,),
+        )
+        if not row:
+            return None
+        raw = row.get("md5_mutation_override")
+        if raw is None:
+            return None
+        return bool(int(raw))
 
     async def delete_source_group(self, source_group_id: int) -> dict[str, int]:
         now = self._now()

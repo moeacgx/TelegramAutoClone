@@ -14,6 +14,10 @@ class EnableRequest(BaseModel):
     enabled: bool
 
 
+class Md5OverrideRequest(BaseModel):
+    mode: str
+
+
 @router.get("")
 async def list_source_groups(request: Request):
     state = get_state(request)
@@ -75,3 +79,20 @@ async def set_source_group_enabled(source_group_id: int, payload: EnableRequest,
     state = get_state(request)
     await state.topic_service.set_source_group_enabled(source_group_id, payload.enabled)
     return {"ok": True}
+
+
+@router.post("/{source_group_id}/md5-override")
+async def set_source_group_md5_override(source_group_id: int, payload: Md5OverrideRequest, request: Request):
+    state = get_state(request)
+    mode = str(payload.mode or "").strip().lower()
+    if mode in {"inherit", "follow", "default", "null"}:
+        override = None
+    elif mode in {"on", "enable", "enabled", "true", "1"}:
+        override = True
+    elif mode in {"off", "disable", "disabled", "false", "0"}:
+        override = False
+    else:
+        raise HTTPException(status_code=400, detail="mode 仅支持 inherit/on/off")
+
+    await state.db.set_source_group_md5_override(source_group_id, override)
+    return {"ok": True, "override": override}
