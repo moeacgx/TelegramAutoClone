@@ -83,7 +83,12 @@ async function refreshAuthStatus() {
 
 async function refreshUpdateStatus() {
   const status = await api("/api/update/status");
-  setText("update-status", JSON.stringify(status, null, 2));
+  const message = status.message || (status.has_update ? "检测到新版本" : "当前已是最新版本");
+  setText("update-current", status.current_version || "-");
+  setText("update-latest", status.latest_tag || "-");
+  setText("update-message", message);
+  setText("update-asset", status.asset_name || "-");
+  setText("update-published", status.published_at || "-");
 }
 
 async function refreshCloneSettings() {

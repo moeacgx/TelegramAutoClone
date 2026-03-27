@@ -1,4 +1,5 @@
 from functools import lru_cache
+import os
 from pathlib import Path
 
 from pydantic import Field, model_validator
@@ -19,6 +20,25 @@ def _read_app_version() -> str:
             return text
     return "dev"
 
+
+def _detect_base_dir() -> Path:
+    env_root = (os.environ.get("APP_BASE_DIR") or os.environ.get("APP_ROOT") or "").strip()
+    if env_root:
+        return Path(env_root)
+    app_dir = Path("/app")
+    if app_dir.exists():
+        return app_dir
+    return Path.cwd()
+
+
+def _resolve_data_path(value: str, base_dir: Path) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return raw
+    path = Path(raw)
+    if path.is_absolute():
+        return str(path)
+    return str(base_dir / path)
 
 class Settings(BaseSettings):
     api_id: int = Field(default=0, alias="API_ID")
@@ -73,6 +93,14 @@ class Settings(BaseSettings):
             raise ValueError("UPDATE_HTTP_TIMEOUT_SECONDS 必须大于 0")
         if self.self_update_restart_delay_seconds <= 0:
             raise ValueError("SELF_UPDATE_RESTART_DELAY_SECONDS 必须大于 0")
+        base_dir = _detect_base_dir()
+        self.database_path = _resolve_data_path(self.database_path, base_dir)
+        self.topic_avatar_dir = _resolve_data_path(self.topic_avatar_dir, base_dir)
+        self.sessions_dir = _resolve_data_path(self.sessions_dir, base_dir)
+        if str(self.clone_download_temp_dir or "").strip():
+            self.clone_download_temp_dir = _resolve_data_path(self.clone_download_temp_dir, base_dir)
+        if str(self.self_update_work_dir or "").strip():
+            self.self_update_work_dir = _resolve_data_path(self.self_update_work_dir, base_dir)
         return self
 
 
