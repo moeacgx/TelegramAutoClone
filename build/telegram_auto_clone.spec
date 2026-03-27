@@ -25,7 +25,7 @@ for package_name in (
     binaries += package_binaries
     hiddenimports += package_hiddenimports
 
-root_dir = Path(__file__).resolve().parent.parent
+root_dir = Path.cwd().resolve()
 
 datas += [
     (str(root_dir / "app/static"), "app/static"),
