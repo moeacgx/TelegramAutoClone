@@ -1074,9 +1074,12 @@ class Database:
                 await conn.execute("BEGIN IMMEDIATE")
                 cur = await conn.execute(
                     """
-                    SELECT id FROM recovery_queue
-                    WHERE status IN ('pending','waiting_standby')
-                    ORDER BY id ASC
+                    SELECT q.id
+                    FROM recovery_queue q
+                    JOIN source_groups s ON s.id = q.source_group_id
+                    WHERE q.status IN ('pending','waiting_standby')
+                      AND s.enabled = 1
+                    ORDER BY q.id ASC
                     LIMIT 1
                     """
                 )
