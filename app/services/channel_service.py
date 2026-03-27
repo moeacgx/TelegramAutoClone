@@ -448,6 +448,81 @@ class ChannelService:
             raise RuntimeError(data.get("description") or f"Bot API {method} 失败")
         return data.get("result")
 
+    async def _delete_probe_message_with_retry(
+        self,
+        channel_chat_id: int,
+        message_id: int,
+    ) -> None:
+        if message_id <= 0:
+            return
+        last_exc: Exception | None = None
+        for attempt in range(2):
+            try:
+                await self._bot_api_request(
+                    "deleteMessage",
+                    {
+                        "chat_id": int(channel_chat_id),
+                        "message_id": message_id,
+                    },
+                    timeout_seconds=10,
+                )
+                return
+            except tg_errors.FloodWaitError as delete_flood:
+                last_exc = delete_flood
+                wait_seconds = int(getattr(delete_flood, "seconds", 0) or 0)
+                logger.warning(
+                    "探测消息删除触发 FloodWait，等待 %ss 后重试: channel=%s",
+                    wait_seconds,
+                    channel_chat_id,
+                )
+                if wait_seconds > 0:
+                    await asyncio.sleep(wait_seconds + 1)
+                else:
+                    await asyncio.sleep(2)
+            except Exception as delete_exc:
+                last_exc = delete_exc
+                wait_seconds = self._extract_retry_after_seconds(delete_exc)
+                if wait_seconds > 0:
+                    logger.warning(
+                        "探测消息删除触发限流，等待 %ss 后重试: channel=%s",
+                        wait_seconds,
+                        channel_chat_id,
+                    )
+                    await asyncio.sleep(min(wait_seconds, 15) + 1)
+                elif attempt == 0:
+                    await asyncio.sleep(2)
+
+        logger.warning(
+            "探测消息删除失败，准备延迟清理: channel=%s reason=%s",
+            channel_chat_id,
+            last_exc,
+        )
+
+        async def _delayed_cleanup() -> None:
+            await asyncio.sleep(20)
+            try:
+                await self._bot_api_request(
+                    "deleteMessage",
+                    {
+                        "chat_id": int(channel_chat_id),
+                        "message_id": message_id,
+                    },
+                    timeout_seconds=10,
+                )
+                logger.info(
+                    "探测消息延迟清理成功: channel=%s message_id=%s",
+                    channel_chat_id,
+                    message_id,
+                )
+            except Exception as delete_exc:
+                logger.warning(
+                    "探测消息延迟清理失败: channel=%s reason=%s",
+                    channel_chat_id,
+                    delete_exc,
+                )
+
+        asyncio.create_task(_delayed_cleanup())
+
     async def _probe_bot_send_then_delete(
         self,
         channel_chat_id: int,
@@ -467,29 +542,7 @@ class ChannelService:
                 )
                 message_id = int((probe_message or {}).get("message_id") or 0)
                 chat_title = str((((probe_message or {}).get("chat") or {}).get("title") or "")).strip()
-                try:
-                    if message_id > 0:
-                        await self._bot_api_request(
-                            "deleteMessage",
-                            {
-                                "chat_id": int(channel_chat_id),
-                                "message_id": message_id,
-                            },
-                            timeout_seconds=10,
-                        )
-                except tg_errors.FloodWaitError as delete_flood:
-                    logger.warning(
-                        "探测消息删除触发 FloodWait(不影响可用性判定): channel=%s wait=%s",
-                        channel_chat_id,
-                        int(getattr(delete_flood, "seconds", 0) or 0),
-                    )
-                except Exception as delete_exc:
-                    # 发送成功即判定频道可用；删除失败仅记录日志，避免误判失效。
-                    logger.warning(
-                        "探测消息删除失败(不影响可用性判定): channel=%s reason=%s",
-                        channel_chat_id,
-                        delete_exc,
-                    )
+                await self._delete_probe_message_with_retry(channel_chat_id, message_id)
                 title = chat_title or str(channel_chat_id)
                 return True, title, None
             except Exception as exc:
