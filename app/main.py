@@ -1,7 +1,9 @@
 import asyncio
 import logging
+import sys
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -28,6 +30,11 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+def _resolve_app_root() -> Path:
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS)  # type: ignore[attr-defined]
+    return Path(__file__).resolve().parent.parent
 
 
 @asynccontextmanager
@@ -57,7 +64,8 @@ async def lifespan(app: FastAPI):
     update_service = UpdateService(db, settings_obj, telegram, restart_service)
     panel_auth_service = PanelAuthService(settings_obj)
 
-    templates = Jinja2Templates(directory="app/templates")
+    app_root = _resolve_app_root()
+    templates = Jinja2Templates(directory=str(app_root / "app" / "templates"))
 
     app.state.settings = settings_obj
     app.state.db = db
@@ -160,7 +168,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Telegram Auto Clone", lifespan=lifespan)
 
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
+_app_root = _resolve_app_root()
+app.mount("/static", StaticFiles(directory=str(_app_root / "app" / "static")), name="static")
 
 app.include_router(dashboard.router)
 app.include_router(panel_auth.router)
