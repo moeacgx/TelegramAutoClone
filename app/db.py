@@ -988,7 +988,14 @@ class Database:
                 (now, queue_id),
             )
         elif status == "stopping":
-            pass
+            await self._execute(
+                """
+                UPDATE recovery_queue
+                SET status='stopped', last_error='已强制停止(可能仍在执行)', updated_at=?
+                WHERE id=?
+                """,
+                (now, queue_id),
+            )
         elif status in {"done", "failed", "stopped"}:
             raise RuntimeError(f"任务 #{queue_id} 当前状态为 {status}，无需停止")
         else:
@@ -1058,7 +1065,7 @@ class Database:
                     SET status='pending',
                         last_error='手动重置运行中任务为 pending',
                         updated_at=?
-                    WHERE status='running'
+                    WHERE status IN ('running','stopping')
                     """,
                     (now,),
                 )
