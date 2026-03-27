@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 from pathlib import Path
 from typing import Any, Callable
 
@@ -20,8 +21,22 @@ async def fast_upload_file(
 ):
     """优先使用 FastTelethon 多连接上传，失败时自动降级到 Telethon 原生上传。"""
     path = Path(file_path)
+    if connections is None:
+        raw_connections = str(os.environ.get("FAST_TELETHON_CONNECTIONS") or "").strip()
+        if raw_connections:
+            try:
+                connections = max(1, int(raw_connections))
+            except Exception:  # noqa: BLE001
+                connections = None
     if part_size <= 0:
         part_size = 512 * 1024
+    elif part_size == 512 * 1024:
+        raw_part_size = str(os.environ.get("FAST_TELETHON_PART_SIZE") or "").strip()
+        if raw_part_size:
+            try:
+                part_size = max(32 * 1024, int(raw_part_size))
+            except Exception:  # noqa: BLE001
+                part_size = 512 * 1024
 
     try:
         import FastTelethonhelper  # type: ignore  # noqa: F401

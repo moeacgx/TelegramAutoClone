@@ -120,7 +120,7 @@ class CloneService:
 
         for _ in range(2):
             try:
-                await self.telegram.bot_client.forward_messages(
+                await self.telegram.user_client.forward_messages(
                     entity=target_channel,
                     messages=message_ids,
                     from_peer=source_chat_id,
@@ -169,7 +169,7 @@ class CloneService:
 
         for _ in range(2):
             try:
-                await self.telegram.bot_client.send_message(
+                await self.telegram.user_client.send_message(
                     entity=target_channel,
                     message=text,
                     formatting_entities=entities,
@@ -230,7 +230,7 @@ class CloneService:
         for _ in range(2):
             try:
                 try:
-                    await self.telegram.bot_client.send_file(
+                    await self.telegram.user_client.send_file(
                         entity=target_channel,
                         file=getattr(message, "media", None),
                         caption=caption,
@@ -603,14 +603,14 @@ class CloneService:
 
                 if len(media_inputs) == 1:
                     item = prepared_items[0]
-                    await self.telegram.bot_client.send_file(
+                    await self.telegram.user_client.send_file(
                         entity=target_channel,
                         file=media_inputs[0],
                         caption=item.caption,
                         formatting_entities=item.caption_entities,
                     )
                 else:
-                    await self.telegram.bot_client.send_file(
+                    await self.telegram.user_client.send_file(
                         entity=target_channel,
                         file=media_inputs,
                         caption=[item.caption or "" for item in prepared_items],
@@ -639,13 +639,13 @@ class CloneService:
         return False
 
     async def _build_input_media(self, item: PreparedMediaItem):
-        uploaded_file = await fast_upload_file(self.telegram.bot_client, item.file_path)
+        uploaded_file = await fast_upload_file(self.telegram.user_client, item.file_path)
         if item.is_photo:
             return InputMediaUploadedPhoto(file=uploaded_file)
 
         thumb_uploaded = None
         if item.thumb_path:
-            thumb_uploaded = await self.telegram.bot_client.upload_file(item.thumb_path)
+            thumb_uploaded = await self.telegram.user_client.upload_file(item.thumb_path)
 
         attributes = self._normalize_document_attributes(item.attributes, item.supports_streaming)
         mime_type = item.mime_type or mimetypes.guess_type(item.file_path)[0] or "application/octet-stream"
